@@ -536,6 +536,8 @@ class _TocPanel(QFrame):
 
     heading_clicked = pyqtSignal(int)   # posição do bloco no documento
     search_changed  = pyqtSignal(str)   # query de busca digitada pelo usuário
+    next_match      = pyqtSignal()
+    prev_match      = pyqtSignal()
 
     def __init__(self, dark=False, parent=None):
         super().__init__(parent)
@@ -547,11 +549,47 @@ class _TocPanel(QFrame):
         layout.setContentsMargins(6, 6, 6, 4)
         layout.setSpacing(4)
 
+        # Linha de busca: campo + botões ↑ ↓
+        search_row = QHBoxLayout()
+        search_row.setSpacing(2)
+
         self._search = QLineEdit()
         self._search.setObjectName("search_input")
         self._search.setPlaceholderText("🔍  Buscar nas notas...")
         self._search.textChanged.connect(self._on_search_changed)
-        layout.addWidget(self._search)
+        search_row.addWidget(self._search, 1)
+
+        ic = "#94A3B8" if dark else "#475569"
+        hov = "#1E3A5F" if dark else "#E2E8F0"
+        _nav_style = (
+            f"QPushButton {{ background:transparent; border:none; border-radius:4px; padding:1px; }}"
+            f"QPushButton:hover {{ background:{hov}; }}"
+            f"QPushButton:disabled {{ opacity:0.35; }}"
+        )
+        self._prev_btn = QPushButton()
+        self._prev_btn.setIcon(qta.icon("fa6s.chevron-up", color=ic))
+        self._prev_btn.setFixedSize(24, 24)
+        self._prev_btn.setToolTip("Ocorrência anterior (Shift+Enter)")
+        self._prev_btn.setEnabled(False)
+        self._prev_btn.setAutoDefault(False)
+        self._prev_btn.setStyleSheet(_nav_style)
+        self._prev_btn.clicked.connect(self.prev_match)
+        search_row.addWidget(self._prev_btn)
+
+        self._next_btn = QPushButton()
+        self._next_btn.setIcon(qta.icon("fa6s.chevron-down", color=ic))
+        self._next_btn.setFixedSize(24, 24)
+        self._next_btn.setToolTip("Próxima ocorrência (Enter)")
+        self._next_btn.setEnabled(False)
+        self._next_btn.setAutoDefault(False)
+        self._next_btn.setStyleSheet(_nav_style)
+        self._next_btn.clicked.connect(self.next_match)
+        search_row.addWidget(self._next_btn)
+
+        # Enter / Shift+Enter navegam enquanto o campo tem foco
+        self._search.returnPressed.connect(self.next_match)
+
+        layout.addLayout(search_row)
 
         self._list = QListWidget()
         self._list.setFrameShape(QFrame.Shape.NoFrame)
@@ -616,6 +654,11 @@ class _TocPanel(QFrame):
         self._search.blockSignals(False)
         self._apply_filter("")
 
+    def set_match_count(self, n: int):
+        enabled = n > 0
+        self._prev_btn.setEnabled(enabled)
+        self._next_btn.setEnabled(enabled)
+
     def set_dark(self, dark: bool):
         self._dark = dark
         self._apply_styles()
@@ -667,7 +710,12 @@ class NotePad(QWidget):
         self._toc_panel = _TocPanel(dark=dark)
         self._toc_panel.heading_clicked.connect(self._goto_heading)
         self._toc_panel.search_changed.connect(self._search_in_notes)
+        self._toc_panel.next_match.connect(lambda: self._go_match(+1))
+        self._toc_panel.prev_match.connect(lambda: self._go_match(-1))
         toc_col_v.addWidget(self._toc_panel, 1)
+
+        self._match_cursors: list[QTextCursor] = []
+        self._match_idx = -1
 
         # Splitter permite arrastar para redimensionar a coluna do índice
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -785,6 +833,8 @@ class NotePad(QWidget):
         doc = self._editor.document()
         selections: list[QTextEdit.ExtraSelection] = []
         fracs: list[float] = []
+        self._match_cursors = []
+        self._match_idx = -1
         q = query.strip()
 
         if q:
@@ -801,6 +851,7 @@ class NotePad(QWidget):
                 cursor = doc.find(q, cursor)
                 if cursor.isNull():
                     break
+                self._match_cursors.append(QTextCursor(cursor))
                 sel = QTextEdit.ExtraSelection()
                 sel.cursor = cursor
                 sel.format  = fmt
@@ -811,6 +862,19 @@ class NotePad(QWidget):
 
         self._editor.setExtraSelections(selections)
         self._match_marks.set_fracs(fracs)
+        self._toc_panel.set_match_count(len(self._match_cursors))
+
+    def _go_match(self, direction: int):
+        if not self._match_cursors:
+            return
+        n = len(self._match_cursors)
+        if self._match_idx < 0:
+            self._match_idx = 0 if direction > 0 else n - 1
+        else:
+            self._match_idx = (self._match_idx + direction) % n
+        self._editor.setTextCursor(self._match_cursors[self._match_idx])
+        self._editor.ensureCursorVisible()
+        self._editor.setFocus()
 
     # ── API pública ───────────────────────────────────────────────────────────
 
