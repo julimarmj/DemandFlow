@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QWidget, QFrame, QHBoxLayout, QVBoxLayout,
     QPushButton, QComboBox, QColorDialog, QLabel,
     QApplication, QFileDialog, QLineEdit, QGraphicsDropShadowEffect,
-    QListWidget, QListWidgetItem,
+    QListWidget, QListWidgetItem, QSplitter,
 )
 from PyQt6.QtGui import (
     QTextCharFormat, QTextListFormat, QColor, QFont, QTextCursor,
@@ -577,14 +577,10 @@ class NotePad(QWidget):
         root.addWidget(self._toolbar)
 
         # ── Área de conteúdo: coluna TOC + editor ──────────────────────────
-        content_area = QWidget()
-        content_h = QHBoxLayout(content_area)
-        content_h.setContentsMargins(0, 0, 0, 0)
-        content_h.setSpacing(0)
-
         # Coluna esquerda: botão de toggle + painel TOC
         self._toc_col = QWidget()
-        self._toc_col.setFixedWidth(200)
+        self._toc_col.setMinimumWidth(32)
+        self._toc_open_width = 200
         toc_col_v = QVBoxLayout(self._toc_col)
         toc_col_v.setContentsMargins(0, 0, 0, 0)
         toc_col_v.setSpacing(0)
@@ -600,10 +596,16 @@ class NotePad(QWidget):
         self._toc_panel.heading_clicked.connect(self._goto_heading)
         toc_col_v.addWidget(self._toc_panel, 1)
 
-        content_h.addWidget(self._toc_col)
-        content_h.addWidget(self._editor, 1)
+        # Splitter permite arrastar para redimensionar a coluna do índice
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.setChildrenCollapsible(False)
+        self._splitter.addWidget(self._toc_col)
+        self._splitter.addWidget(self._editor)
+        self._splitter.setSizes([200, 800])
+        self._splitter.setStretchFactor(0, 0)
+        self._splitter.setStretchFactor(1, 1)
 
-        root.addWidget(content_area, 1)
+        root.addWidget(self._splitter, 1)
 
         # Auto-save com debounce de 2s.
         # Usa contentsChange (com args position/removed/added) em vez de
@@ -674,11 +676,15 @@ class NotePad(QWidget):
     def _toggle_toc(self):
         self._toc_open = not self._toc_open
         self._toc_panel.setVisible(self._toc_open)
+        sizes = self._splitter.sizes()
+        total = sum(sizes)
         if self._toc_open:
-            self._toc_col.setFixedWidth(200)
+            w = max(self._toc_open_width, 120)
+            self._splitter.setSizes([w, total - w])
             self._toc_toggle_btn.setText("◀  Índice")
         else:
-            self._toc_col.setFixedWidth(32)
+            self._toc_open_width = sizes[0]  # guarda largura atual
+            self._splitter.setSizes([32, total - 32])
             self._toc_toggle_btn.setText("▶")
 
     def _goto_heading(self, pos: int):
