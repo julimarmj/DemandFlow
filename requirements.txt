@@ -1,0 +1,17 @@
+# DemandFlow — Requisitos Python
+# Instale com: pip install -r requirements.txt
+
+PyQt6>=6.6.0
+PyQt6-Qt6>=6.6.0
+
+# Opcional — exportação de relatórios
+reportlab>=4.0.0      # Geração de PDF
+openpyxl>=3.1.0       # Exportação Excel
+
+# Correção ortográfica (NotePad / SpellCheckLineEdit) — binding C++ do Hunspell
+cyhunspell>=2.0.2
+
+# Banco de dados (SQLite já incluso no Python)
+# Para PostgreSQL no futuro:
+# psycopg2-binary>=2.9.0
+# SQLAlchemy>=2.0.0

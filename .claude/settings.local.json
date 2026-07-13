@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(.venv\\\\Scripts\\\\python.exe \"C:\\\\Users\\\\j95844\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-j95844-OneDrive---ArcelorMittal-Documentos-VScode-demandflow\\\\6c1882d6-58db-4896-aaf2-9635778f564e\\\\scratchpad\\\\test_full_app_planning.py\")"
+    ]
+  }
+}
