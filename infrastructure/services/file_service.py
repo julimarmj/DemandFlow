@@ -414,7 +414,13 @@ class DemandFileService:
         return [self._build_node(root, is_root=True)]
 
     def _build_node(self, path: Path, is_root: bool = False) -> dict:
-        stat = path.stat()
+        try:
+            stat = path.stat()
+            size = stat.st_size if path.is_file() else 0
+            modified = datetime.fromtimestamp(stat.st_mtime).strftime("%d/%m/%Y %H:%M")
+        except OSError:
+            size = 0
+            modified = ""
         node: dict = {
             "name":     path.name,
             "path":     str(path),
@@ -422,12 +428,21 @@ class DemandFileService:
             "is_root":  is_root,
             "children": [],
             "icon":     self.icon_provider.icon(QFileInfo(str(path))),
-            "size":     stat.st_size if path.is_file() else 0,
-            "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%d/%m/%Y %H:%M"),
+            "size":     size,
+            "modified": modified,
         }
         if path.is_dir():
-            entries = sorted(path.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
-            node["children"] = [self._build_node(e) for e in entries]
+            try:
+                entries = sorted(path.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+            except OSError:
+                entries = []
+            children = []
+            for e in entries:
+                try:
+                    children.append(self._build_node(e))
+                except OSError:
+                    pass
+            node["children"] = children
         return node
 
     def search_files(self, demand_id: int, demand_title: str, query: str) -> list[dict]:
@@ -437,7 +452,13 @@ class DemandFileService:
         results = []
         for p in root.rglob("*"):
             if q in p.name.lower():
-                stat = p.stat()
+                try:
+                    stat = p.stat()
+                    size = stat.st_size if p.is_file() else 0
+                    modified = datetime.fromtimestamp(stat.st_mtime).strftime("%d/%m/%Y %H:%M")
+                except OSError:
+                    size = 0
+                    modified = ""
                 results.append({
                     "name":     p.name,
                     "path":     str(p),
@@ -445,8 +466,8 @@ class DemandFileService:
                     "is_root":  False,
                     "children": [],
                     "icon":     self.icon_provider.icon(QFileInfo(str(p))),
-                    "size":     stat.st_size if p.is_file() else 0,
-                    "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%d/%m/%Y %H:%M"),
+                    "size":     size,
+                    "modified": modified,
                     "relative": str(p.relative_to(root)),
                 })
         return sorted(results, key=lambda x: (x["is_dir"], x["name"].lower()))
