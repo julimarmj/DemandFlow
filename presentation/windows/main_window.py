@@ -503,7 +503,7 @@ class MainWindow(QMainWindow):
         right_v.addWidget(self.content_area)
         main_h.addWidget(right)
 
-        self.statusBar().showMessage("DemandFlow v2.0 — Pronto")
+        self.statusBar().showMessage(f"DemandFlow v{__version__} — Pronto")
 
     # ── Sidebar ────────────────────────────────────────────────────────────────
 
@@ -533,7 +533,7 @@ class MainWindow(QMainWindow):
         lt_v.setSpacing(0)
         name_lbl = QLabel("DemandFlow")
         name_lbl.setObjectName("logo_label")
-        ver_lbl = QLabel("v2.0 Pro")
+        ver_lbl = QLabel(f"v{__version__}")
         ver_lbl.setObjectName("version_label")
         lt_v.addWidget(name_lbl)
         lt_v.addWidget(ver_lbl)
