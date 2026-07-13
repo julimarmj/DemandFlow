@@ -150,7 +150,7 @@ class _FormattingToolbar(QFrame):
         row.addStretch()
 
         # Botão IA (só aparece se configurado)
-        self._ai_btn = QPushButton("  IA")
+        self._ai_btn = QPushButton("  Reescrever")
         self._ai_btn.setIcon(qta.icon("fa6s.wand-magic-sparkles", color="white"))
         self._ai_btn.setToolTip("Reescrever texto selecionado com IA")
         self._ai_btn.setFixedHeight(26)
