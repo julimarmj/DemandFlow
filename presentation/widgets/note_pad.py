@@ -203,7 +203,13 @@ class _FormattingToolbar(QFrame):
             )
         size = fmt.fontPointSize()
         if size <= 0:
-            size = self._editor.document().defaultFont().pointSize()
+            # texto colado de fontes externas pode usar pixels em vez de pontos
+            px = fmt.fontPixelSize()
+            if px > 0:
+                dpi = QApplication.primaryScreen().logicalDotsPerInch()
+                size = px * 72.0 / dpi
+            else:
+                size = self._editor.document().defaultFont().pointSize()
         if size > 0:
             self._size_combo.blockSignals(True)
             target = str(round(size))
