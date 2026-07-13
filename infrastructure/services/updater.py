@@ -9,6 +9,7 @@ Fluxo:
 """
 import os
 import sys
+import ssl
 import json
 import shutil
 import zipfile
@@ -16,6 +17,19 @@ import tempfile
 import urllib.request
 import urllib.error
 from pathlib import Path
+
+def _no_verify_ctx():
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+def _urlopen(req, timeout=10):
+    """Tenta com SSL normal; se falhar por certificado, tenta sem verificação."""
+    try:
+        return urllib.request.urlopen(req, timeout=timeout)
+    except (ssl.SSLError, urllib.error.URLError):
+        return urllib.request.urlopen(req, timeout=timeout, context=_no_verify_ctx())
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
@@ -49,7 +63,7 @@ class UpdateChecker(QThread):
                     "User-Agent": "DemandFlow-Updater",
                 },
             )
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with _urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read())
 
             latest = data.get("tag_name", "").lstrip("v")
@@ -88,7 +102,7 @@ class UpdateDownloader(QThread):
                 self._url,
                 headers={"User-Agent": "DemandFlow-Updater"},
             )
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with _urlopen(req, timeout=60) as resp:
                 total = int(resp.headers.get("Content-Length", 0))
                 downloaded = 0
                 chunk = 8192
