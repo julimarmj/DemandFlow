@@ -10,6 +10,8 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 datas = [
     ('resources/dictionaries', 'resources/dictionaries'),
     ('resources/icon.ico', 'resources'),
+    ('resources/arrow_down_light.svg', 'resources'),
+    ('resources/arrow_down_dark.svg', 'resources'),
     ('version.py', '.'),
     ('updater.bat', '.'),
 ]

@@ -2,6 +2,16 @@
 DemandFlow - Estilos QSS
 Tema profissional para PyQt6 (Light e Dark).
 """
+import sys
+from pathlib import Path
+
+def _res(filename: str) -> str:
+    if getattr(sys, "frozen", False):
+        base = Path(sys._MEIPASS)
+    else:
+        base = Path(__file__).resolve().parent.parent.parent / "resources"
+        return str(base / filename).replace("\\", "/")
+    return str(base / "resources" / filename).replace("\\", "/")
 
 COLORS_LIGHT = {
     "bg_primary":    "#FFFFFF",
@@ -48,6 +58,7 @@ COLORS_DARK = {
 
 def get_stylesheet(dark: bool = False) -> str:
     C = COLORS_DARK if dark else COLORS_LIGHT
+    arrow_svg = _res("arrow_down_dark.svg" if dark else "arrow_down_light.svg")
 
     return f"""
     /* ── Global ────────────────────────────────── */
@@ -167,6 +178,7 @@ def get_stylesheet(dark: bool = False) -> str:
         border-bottom-right-radius: 5px;
     }}
     QComboBox::drop-down {{ border: none; width: 20px; }}
+    QComboBox::down-arrow {{ image: url("{arrow_svg}"); width: 10px; height: 6px; }}
     QComboBox QAbstractItemView {{
         background-color: {C['bg_primary']};
         border: 1px solid {C['border']};
