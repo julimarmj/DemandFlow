@@ -104,13 +104,21 @@ class UpdateDownloader(QThread):
 
             self.progress.emit(100)
 
+            self.progress.emit(101)   # sinaliza fase de extração
+
             extract_dir = os.path.join(tmp_dir, "extracted")
             with zipfile.ZipFile(zip_path, "r") as zf:
                 zf.extractall(extract_dir)
 
-            # O zip deve conter uma pasta raiz "DemandFlow" — procura ela
+            # Se o zip tem arquivos na raiz (nosso formato: exe + _internal/)
+            # usa extract_dir diretamente. Só entra na subpasta se o zip
+            # tiver UMA única pasta e nenhum arquivo na raiz.
+            files_at_root = [f for f in Path(extract_dir).iterdir() if f.is_file()]
             subdirs = [d for d in Path(extract_dir).iterdir() if d.is_dir()]
-            source = str(subdirs[0]) if subdirs else extract_dir
+            if not files_at_root and len(subdirs) == 1:
+                source = str(subdirs[0])
+            else:
+                source = extract_dir
 
             self.ready.emit(source)
         except Exception as e:
@@ -132,8 +140,11 @@ def apply_update(source_dir: str):
         print(f"[UPDATER] Modo dev: nova versão em {source_dir}")
         return
 
-    # Localiza o updater.bat ao lado do executável
-    bat = Path(dest_dir) / "updater.bat"
+    # Localiza o updater.bat: em builds --onedir fica em _internal/
+    meipass = Path(getattr(sys, "_MEIPASS", dest_dir))
+    bat = meipass / "updater.bat"
+    if not bat.exists():
+        bat = Path(dest_dir) / "updater.bat"
     if not bat.exists():
         return
 

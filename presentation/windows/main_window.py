@@ -2681,10 +2681,11 @@ class MainWindow(QMainWindow):
     def _build_update_banner(self) -> QFrame:
         banner = QFrame()
         banner.setObjectName("update_banner")
+        banner.setFixedHeight(36)
         banner.hide()
         h = QHBoxLayout(banner)
-        h.setContentsMargins(16, 8, 16, 8)
-        h.setSpacing(12)
+        h.setContentsMargins(12, 0, 12, 0)
+        h.setSpacing(10)
 
         import qtawesome as _qta
         ic = QLabel()
@@ -2700,10 +2701,10 @@ class MainWindow(QMainWindow):
         self._update_progress.hide()
         h.addWidget(self._update_progress)
 
-        btn = QPushButton("Atualizar agora")
+        btn = QPushButton("Atualizar")
         btn.setObjectName("btn_primary")
         btn.setAutoDefault(False)
-        btn.setFixedHeight(28)
+        btn.setFixedSize(90, 26)
         btn.clicked.connect(self._do_update)
         self._update_btn = btn
         h.addWidget(btn)
@@ -2711,7 +2712,7 @@ class MainWindow(QMainWindow):
         dismiss = QPushButton("Ignorar")
         dismiss.setObjectName("btn_secondary")
         dismiss.setAutoDefault(False)
-        dismiss.setFixedHeight(28)
+        dismiss.setFixedSize(70, 26)
         dismiss.clicked.connect(banner.hide)
         h.addWidget(dismiss)
 
@@ -2736,7 +2737,9 @@ class MainWindow(QMainWindow):
 
         self._downloader = UpdateDownloader(self._update_url, self)
         self._downloader.progress.connect(
-            lambda p: self._update_progress.setText(f"{p}%")
+            lambda p: self._update_progress.setText(
+                "Extraindo..." if p > 100 else f"{p}%"
+            )
         )
         self._downloader.ready.connect(self._on_download_ready)
         self._downloader.failed.connect(self._on_download_failed)
