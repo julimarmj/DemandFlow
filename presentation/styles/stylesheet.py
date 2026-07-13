@@ -156,9 +156,15 @@ def get_stylesheet(dark: bool = False) -> str:
     QComboBox:focus {{ border-color: {C['accent']}; }}
     QComboBox#font_size_combo {{
         min-width: 0px;
-        padding: 2px 4px;
+        padding: 2px 2px 2px 6px;
         font-size: 12px;
         border-radius: 5px;
+    }}
+    QComboBox#font_size_combo::drop-down {{
+        border: none;
+        width: 18px;
+        border-top-right-radius: 5px;
+        border-bottom-right-radius: 5px;
     }}
     QComboBox::drop-down {{ border: none; width: 20px; }}
     QComboBox QAbstractItemView {{
