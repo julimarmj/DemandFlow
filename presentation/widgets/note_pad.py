@@ -94,13 +94,12 @@ class _FormattingToolbar(QFrame):
 
         # Tamanho de fonte
         self._size_combo = QComboBox()
-        self._size_combo.setEditable(True)
-        self._size_combo.setFixedWidth(62)
+        self._size_combo.setFixedWidth(68)
         self._size_combo.setFixedHeight(26)
-        for s in ["8","9","10","11","12","14","16","18","20","24","28","32","36","48"]:
+        for s in ["8","9","10","11","12","14","16","18","20","24","28","32","36","48","72"]:
             self._size_combo.addItem(s)
         self._size_combo.setCurrentText("12")
-        self._size_combo.currentTextChanged.connect(self._change_size)
+        self._size_combo.activated.connect(self._change_size)
         row.addWidget(self._size_combo)
 
         row.addWidget(_Sep())
@@ -206,7 +205,14 @@ class _FormattingToolbar(QFrame):
             size = self._editor.document().defaultFont().pointSize()
         if size > 0:
             self._size_combo.blockSignals(True)
-            self._size_combo.setCurrentText(str(round(size)))
+            target = str(round(size))
+            idx = self._size_combo.findText(target)
+            if idx >= 0:
+                self._size_combo.setCurrentIndex(idx)
+            else:
+                # tamanho não está na lista — insere temporariamente
+                self._size_combo.insertItem(0, target)
+                self._size_combo.setCurrentIndex(0)
             self._size_combo.blockSignals(False)
 
     def _sync_alignment(self):
@@ -235,9 +241,12 @@ class _FormattingToolbar(QFrame):
                 "QPushButton:hover { border-color:#3B82F6; }"
             )
 
-    def _change_size(self, size_str: str):
+    def _change_size(self, _index: int = 0):
         try:
-            self._editor.setFontPointSize(float(size_str))
+            size = float(self._size_combo.currentText())
+            if size > 0:
+                self._editor.setFontPointSize(size)
+                self._editor.setFocus()
         except ValueError:
             pass
 
