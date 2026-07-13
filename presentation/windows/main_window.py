@@ -2681,10 +2681,10 @@ class MainWindow(QMainWindow):
     def _build_update_banner(self) -> QFrame:
         banner = QFrame()
         banner.setObjectName("update_banner")
-        banner.setFixedHeight(36)
+        banner.setFixedHeight(44)
         banner.hide()
         h = QHBoxLayout(banner)
-        h.setContentsMargins(12, 0, 12, 0)
+        h.setContentsMargins(12, 4, 12, 4)
         h.setSpacing(10)
 
         import qtawesome as _qta
@@ -2704,7 +2704,6 @@ class MainWindow(QMainWindow):
         btn = QPushButton("Atualizar")
         btn.setObjectName("btn_primary")
         btn.setAutoDefault(False)
-        btn.setFixedSize(90, 26)
         btn.clicked.connect(self._do_update)
         self._update_btn = btn
         h.addWidget(btn)
@@ -2712,7 +2711,6 @@ class MainWindow(QMainWindow):
         dismiss = QPushButton("Ignorar")
         dismiss.setObjectName("btn_secondary")
         dismiss.setAutoDefault(False)
-        dismiss.setFixedSize(70, 26)
         dismiss.clicked.connect(banner.hide)
         h.addWidget(dismiss)
 

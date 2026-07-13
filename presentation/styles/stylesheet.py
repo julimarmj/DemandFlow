@@ -215,6 +215,7 @@ def get_stylesheet(dark: bool = False) -> str:
         background-color: {C['accent']};
         border: none;
         color: #FFFFFF;
+        padding: 4px 12px;
     }}
     QPushButton#btn_primary:hover {{ background-color: {C['accent_hover']}; }}
 
