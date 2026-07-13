@@ -9,13 +9,13 @@ from PyQt6.QtWidgets import (
     QWidget, QFrame, QHBoxLayout, QVBoxLayout,
     QPushButton, QComboBox, QColorDialog, QLabel,
     QApplication, QFileDialog, QLineEdit, QGraphicsDropShadowEffect,
-    QListWidget, QListWidgetItem, QSplitter,
+    QListWidget, QListWidgetItem, QSplitter, QScrollBar, QTextEdit,
 )
 from PyQt6.QtGui import (
     QTextCharFormat, QTextListFormat, QColor, QFont, QTextCursor,
     QPainter, QBitmap, QTextBlockFormat,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QEvent
 
 from presentation.widgets.spell_check import SpellCheckTextEdit
 
@@ -488,12 +488,54 @@ class _FormattingToolbar(QFrame):
             self._editor.insert_image_from_path(path)
 
 
+# ── Marcadores na scrollbar ──────────────────────────────────────────────────
+
+class _MatchMarks(QWidget):
+    """Widget filho da QScrollBar vertical, transparente para o mouse,
+    que pinta pequenos ticks amarelos nas posições dos matches de busca."""
+
+    def __init__(self, scrollbar: QScrollBar):
+        super().__init__(scrollbar)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._fracs: list[float] = []
+        self._color = QColor("#F59E0B")
+        scrollbar.installEventFilter(self)
+        self.setGeometry(scrollbar.rect())
+        self.raise_()
+        self.show()
+
+    def set_fracs(self, fracs: list[float]):
+        self._fracs = fracs
+        self.setGeometry(self.parent().rect())
+        self.raise_()
+        self.update()
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Resize:
+            self.setGeometry(watched.rect())
+            self.raise_()
+        return False
+
+    def paintEvent(self, event):
+        if not self._fracs:
+            return
+        p = QPainter(self)
+        h = self.height()
+        w = self.width()
+        for frac in self._fracs:
+            y = int(frac * h)
+            p.fillRect(1, max(0, y - 1), w - 2, 2, self._color)
+        p.end()
+
+
 # ── Painel TOC ───────────────────────────────────────────────────────────────
 
 class _TocPanel(QFrame):
     """Painel lateral com índice de títulos (H1/H2/H3) do editor."""
 
-    heading_clicked = pyqtSignal(int)  # posição do bloco no documento
+    heading_clicked = pyqtSignal(int)   # posição do bloco no documento
+    search_changed  = pyqtSignal(str)   # query de busca digitada pelo usuário
 
     def __init__(self, dark=False, parent=None):
         super().__init__(parent)
@@ -507,8 +549,8 @@ class _TocPanel(QFrame):
 
         self._search = QLineEdit()
         self._search.setObjectName("search_input")
-        self._search.setPlaceholderText("🔍  Buscar títulos...")
-        self._search.textChanged.connect(self._apply_filter)
+        self._search.setPlaceholderText("🔍  Buscar nas notas...")
+        self._search.textChanged.connect(self._on_search_changed)
         layout.addWidget(self._search)
 
         self._list = QListWidget()
@@ -561,6 +603,19 @@ class _TocPanel(QFrame):
             item.setFont(f)
             self._list.addItem(item)
 
+    def _on_search_changed(self, query: str):
+        self._apply_filter(query)
+        self.search_changed.emit(query)
+
+    def current_search(self) -> str:
+        return self._search.text()
+
+    def clear_search(self):
+        self._search.blockSignals(True)
+        self._search.clear()
+        self._search.blockSignals(False)
+        self._apply_filter("")
+
     def set_dark(self, dark: bool):
         self._dark = dark
         self._apply_styles()
@@ -588,6 +643,7 @@ class NotePad(QWidget):
         self._editor = SpellCheckTextEdit()
         self._editor.setAcceptRichText(True)
         self._apply_bottom_margin()
+        self._match_marks = _MatchMarks(self._editor.verticalScrollBar())
 
         self._toolbar = _FormattingToolbar(self._editor, ai_service, dark)
         root.addWidget(self._toolbar)
@@ -610,6 +666,7 @@ class NotePad(QWidget):
 
         self._toc_panel = _TocPanel(dark=dark)
         self._toc_panel.heading_clicked.connect(self._goto_heading)
+        self._toc_panel.search_changed.connect(self._search_in_notes)
         toc_col_v.addWidget(self._toc_panel, 1)
 
         # Splitter permite arrastar para redimensionar a coluna do índice
@@ -724,6 +781,37 @@ class NotePad(QWidget):
         self._editor.ensureCursorVisible()
         self._editor.setFocus()
 
+    def _search_in_notes(self, query: str):
+        doc = self._editor.document()
+        selections: list[QTextEdit.ExtraSelection] = []
+        fracs: list[float] = []
+        q = query.strip()
+
+        if q:
+            fmt = QTextCharFormat()
+            fmt.setBackground(QColor("#5C3A0A" if self._dark else "#FEF3C7"))
+            fmt.setForeground(QColor("#F59E0B" if self._dark else "#92400E"))
+            fmt.setFontWeight(QFont.Weight.DemiBold)
+
+            cursor  = QTextCursor(doc)
+            layout  = doc.documentLayout()
+            doc_h   = doc.size().height()
+
+            while True:
+                cursor = doc.find(q, cursor)
+                if cursor.isNull():
+                    break
+                sel = QTextEdit.ExtraSelection()
+                sel.cursor = cursor
+                sel.format  = fmt
+                selections.append(sel)
+                if doc_h > 0:
+                    top = layout.blockBoundingRect(cursor.block()).top()
+                    fracs.append(top / doc_h)
+
+        self._editor.setExtraSelections(selections)
+        self._match_marks.set_fracs(fracs)
+
     # ── API pública ───────────────────────────────────────────────────────────
 
     def _apply_bottom_margin(self):
@@ -744,6 +832,7 @@ class NotePad(QWidget):
         self._save_timer.stop()
         self._restore_heading_states()
         self._update_toc()
+        self._search_in_notes(self._toc_panel.current_search())
 
     def get_html(self) -> str:
         return self._editor.toHtml()
