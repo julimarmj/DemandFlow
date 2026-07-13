@@ -743,6 +743,14 @@ class DemandDetailDialog(QDialog):
                     date_badge = BadgeLabel(date_str, "#F1F5F9", "#64748B")
             rl.addWidget(date_badge)
 
+            edit_btn = QPushButton()
+            edit_btn.setObjectName("btn_icon")
+            edit_btn.setIcon(qta.icon("fa6s.pen", color="#64748B"))
+            edit_btn.setToolTip("Editar lembrete")
+            edit_btn.setAutoDefault(False)
+            edit_btn.clicked.connect(lambda _, rem=r: self._edit_reminder(rem))
+            rl.addWidget(edit_btn)
+
             del_btn = QPushButton()
             del_btn.setObjectName("btn_icon_danger")
             del_btn.setIcon(qta.icon("fa6s.xmark", color="#EF4444"))
@@ -820,6 +828,71 @@ class DemandDetailDialog(QDialog):
             )
             self._uc.save_reminder(new_r)
             self._render_reminders()
+
+    def _edit_reminder(self, r):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Editar Lembrete")
+        dlg.setMinimumWidth(360)
+        dlg.setModal(True)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(24, 20, 24, 20)
+        v.setSpacing(12)
+
+        v.addWidget(QLabel("Título *"))
+        inp_title = QLineEdit(r.title)
+        v.addWidget(inp_title)
+
+        chk_daily = QCheckBox("Repetir diariamente (sem data fixa)")
+        chk_daily.setChecked(getattr(r, 'daily', False))
+        v.addWidget(chk_daily)
+
+        lbl_date = QLabel("Data do lembrete")
+        v.addWidget(lbl_date)
+        inp_date = QDateEdit()
+        inp_date.setCalendarPopup(True)
+        inp_date.setDisplayFormat("dd/MM/yyyy")
+        inp_date.setDate(QDate(r.remind_at.year, r.remind_at.month, r.remind_at.day))
+        v.addWidget(inp_date)
+
+        def _toggle_daily(checked):
+            lbl_date.setVisible(not checked)
+            inp_date.setVisible(not checked)
+        chk_daily.toggled.connect(_toggle_daily)
+        _toggle_daily(chk_daily.isChecked())
+
+        v.addWidget(QLabel("Nota (opcional)"))
+        inp_note = SpellCheckTextEdit()
+        inp_note.setFixedHeight(64)
+        inp_note.setPlaceholderText("Detalhes do lembrete...")
+        inp_note.setPlainText(r.note or "")
+        v.addWidget(inp_note)
+
+        btns = QHBoxLayout()
+        btn_cancel = QPushButton("Cancelar")
+        btn_cancel.setAutoDefault(False)
+        btn_cancel.clicked.connect(dlg.reject)
+        btn_save = QPushButton("Salvar")
+        btn_save.setObjectName("btn_primary")
+        btn_save.setAutoDefault(False)
+        btn_save.clicked.connect(dlg.accept)
+        btns.addStretch()
+        btns.addWidget(btn_cancel)
+        btns.addWidget(btn_save)
+        v.addLayout(btns)
+
+        if dlg.exec():
+            title = inp_title.text().strip()
+            if not title:
+                return
+            is_daily = chk_daily.isChecked()
+            qd = inp_date.date()
+            r.title     = title
+            r.note      = inp_note.toPlainText().strip()
+            r.daily     = is_daily
+            r.remind_at = date.today() if is_daily else date(qd.year(), qd.month(), qd.day())
+            self._uc.save_reminder(r)
+            self._render_reminders()
+            self.calendar_refresh.emit()
 
     def _toggle_reminder(self, r, done: bool):
         r.done = done
