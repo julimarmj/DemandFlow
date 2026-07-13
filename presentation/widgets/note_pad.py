@@ -9,14 +9,18 @@ from PyQt6.QtWidgets import (
     QWidget, QFrame, QHBoxLayout, QVBoxLayout,
     QPushButton, QComboBox, QColorDialog, QLabel,
     QApplication, QFileDialog, QLineEdit, QGraphicsDropShadowEffect,
+    QListWidget, QListWidgetItem,
 )
 from PyQt6.QtGui import (
     QTextCharFormat, QTextListFormat, QColor, QFont, QTextCursor,
-    QPainter, QBitmap,
+    QPainter, QBitmap, QTextBlockFormat,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint
 
 from presentation.widgets.spell_check import SpellCheckTextEdit
+
+# (size_pt, margin_top, margin_bottom)
+_HEADING_STYLES = {1: (22, 14, 6), 2: (16, 10, 4), 3: (13, 8, 2)}
 
 
 # ── Toolbar de formatação ─────────────────────────────────────────────────────
@@ -44,6 +48,26 @@ class _ToolBtn(QPushButton):
         self.setStyleSheet(f"""
             QPushButton {{
                 background: transparent; border: none; border-radius: 5px; padding: 2px;
+            }}
+            QPushButton:hover {{ background: {hover_bg}; }}
+            QPushButton:checked {{ background: {checked_bg}; border: 1px solid #3B82F6; }}
+        """)
+
+
+class _TextBtn(QPushButton):
+    """Botão da toolbar com texto em vez de ícone (ex.: H1, H2, H3, ¶)."""
+    def __init__(self, text: str, tooltip: str, checkable=False, dark=False, parent=None):
+        super().__init__(text, parent)
+        hover_bg   = "#1E3A5F" if dark else "#E2E8F0"
+        checked_bg = "#1E3A5F" if dark else "#DBEAFE"
+        self.setToolTip(tooltip)
+        self.setFixedSize(28, 28)
+        self.setCheckable(checkable)
+        self.setAutoDefault(False)
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; border: none; border-radius: 5px;
+                font-size: 11px; font-weight: 700; padding: 0;
             }}
             QPushButton:hover {{ background: {hover_bg}; }}
             QPushButton:checked {{ background: {checked_bg}; border: 1px solid #3B82F6; }}
@@ -147,6 +171,20 @@ class _FormattingToolbar(QFrame):
         self._clear_fmt_btn.clicked.connect(self._clear_formatting)
         row.addWidget(self._clear_fmt_btn)
 
+        row.addWidget(_Sep())
+
+        # Estilos de título
+        self._h1_btn   = _TextBtn("H1", "Título 1", checkable=True, dark=dark)
+        self._h2_btn   = _TextBtn("H2", "Título 2", checkable=True, dark=dark)
+        self._h3_btn   = _TextBtn("H3", "Título 3", checkable=True, dark=dark)
+        self._para_btn = _TextBtn("¶",  "Parágrafo normal", checkable=True, dark=dark)
+        self._h1_btn.clicked.connect(lambda: self._apply_heading(1))
+        self._h2_btn.clicked.connect(lambda: self._apply_heading(2))
+        self._h3_btn.clicked.connect(lambda: self._apply_heading(3))
+        self._para_btn.clicked.connect(lambda: self._apply_heading(0))
+        for b in (self._h1_btn, self._h2_btn, self._h3_btn, self._para_btn):
+            row.addWidget(b)
+
         row.addStretch()
 
         # Botão IA (só aparece se configurado)
@@ -190,6 +228,14 @@ class _FormattingToolbar(QFrame):
         cursor = self._editor.textCursor()
         pos = cursor.selectionStart() if cursor.hasSelection() else max(0, cursor.position() - 1)
         self._sync_format(self._fmt_at_pos(pos))
+        state = cursor.block().userState()
+        self._sync_heading_btns(state if state >= 0 else 0)
+
+    def _sync_heading_btns(self, state: int):
+        self._h1_btn.setChecked(state == 1)
+        self._h2_btn.setChecked(state == 2)
+        self._h3_btn.setChecked(state == 3)
+        self._para_btn.setChecked(state <= 0)
 
     def _sync_format(self, fmt: QTextCharFormat):
         self._bold_btn.setChecked(fmt.fontWeight() >= QFont.Weight.Bold)
@@ -285,6 +331,49 @@ class _FormattingToolbar(QFrame):
         if not cursor.hasSelection():
             return
         cursor.setCharFormat(QTextCharFormat())
+
+    def _apply_heading(self, level: int):
+        cursor = self._editor.textCursor()
+        # Toggle: clicar o mesmo nível novamente vira parágrafo normal
+        if level != 0 and cursor.block().userState() == level:
+            level = 0
+
+        doc = self._editor.document()
+        default_size = doc.defaultFont().pointSize()
+        if default_size <= 0:
+            default_size = 11
+        sel_start = cursor.selectionStart()
+        sel_end   = cursor.selectionEnd()
+
+        cursor.beginEditBlock()
+        block = doc.findBlock(sel_start)
+        while block.isValid():
+            char_fmt  = QTextCharFormat()
+            block_fmt = QTextBlockFormat()
+            if level == 0:
+                char_fmt.setFontPointSize(default_size)
+                char_fmt.setFontWeight(QFont.Weight.Normal)
+            else:
+                size, mt, mb = _HEADING_STYLES[level]
+                char_fmt.setFontPointSize(size)
+                char_fmt.setFontWeight(QFont.Weight.Bold)
+                block_fmt.setTopMargin(mt)
+                block_fmt.setBottomMargin(mb)
+
+            bc = QTextCursor(block)
+            bc.setBlockFormat(block_fmt)
+            bc.setBlockCharFormat(char_fmt)
+            bc.movePosition(QTextCursor.MoveOperation.StartOfBlock)
+            bc.movePosition(QTextCursor.MoveOperation.EndOfBlock,
+                            QTextCursor.MoveMode.KeepAnchor)
+            bc.setCharFormat(char_fmt)
+            block.setUserState(level)
+
+            if block.position() + block.length() - 1 >= sel_end:
+                break
+            block = block.next()
+        cursor.endEditBlock()
+        self._sync_heading_btns(level)
 
     def _ai_rewrite(self):
         if not (self._ai_service and self._ai_service.is_configured()):
@@ -399,6 +488,68 @@ class _FormattingToolbar(QFrame):
             self._editor.insert_image_from_path(path)
 
 
+# ── Painel TOC ───────────────────────────────────────────────────────────────
+
+class _TocPanel(QFrame):
+    """Painel lateral com índice de títulos (H1/H2/H3) do editor."""
+
+    heading_clicked = pyqtSignal(int)  # posição do bloco no documento
+
+    def __init__(self, dark=False, parent=None):
+        super().__init__(parent)
+        self._dark = dark
+        self._apply_styles()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self._list = QListWidget()
+        self._list.setFrameShape(QFrame.Shape.NoFrame)
+        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._list.itemClicked.connect(
+            lambda item: self.heading_clicked.emit(item.data(Qt.ItemDataRole.UserRole))
+        )
+        layout.addWidget(self._list, 1)
+
+    def _apply_styles(self):
+        dark = self._dark
+        bg   = "#1E293B" if dark else "#F8FAFC"
+        brd  = "#334155" if dark else "#E2E8F0"
+        fg   = "#94A3B8" if dark else "#64748B"
+        hov  = "#1E3A5F" if dark else "#E2E8F0"
+        sel  = "#1E3A5F" if dark else "#DBEAFE"
+        selc = "#93C5FD" if dark else "#1D4ED8"
+        self.setStyleSheet(f"""
+            QFrame {{ background:{bg}; border-right:1px solid {brd}; }}
+            QListWidget {{ background:{bg}; color:{fg}; border:none; font-size:12px; }}
+            QListWidget::item {{ padding:3px 6px; border-radius:3px; }}
+            QListWidget::item:hover {{ background:{hov}; }}
+            QListWidget::item:selected {{ background:{sel}; color:{selc}; }}
+        """)
+
+    def update_headings(self, doc):
+        self._list.clear()
+        block = doc.begin()
+        while block.isValid():
+            state = block.userState()
+            if state in (1, 2, 3):
+                text = block.text().strip()
+                if text:
+                    item = QListWidgetItem("  " * (state - 1) + text)
+                    item.setData(Qt.ItemDataRole.UserRole, block.position())
+                    f = item.font()
+                    f.setBold(state == 1)
+                    f.setPointSize(11 if state <= 2 else 10)
+                    item.setFont(f)
+                    self._list.addItem(item)
+            block = block.next()
+
+    def set_dark(self, dark: bool):
+        self._dark = dark
+        self._apply_styles()
+
+
 # ── Widget público ────────────────────────────────────────────────────────────
 
 class NotePad(QWidget):
@@ -412,6 +563,7 @@ class NotePad(QWidget):
     def __init__(self, ai_service=None, dark: bool = False, parent=None):
         super().__init__(parent)
         self._dark = dark
+        self._toc_open = True
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -423,7 +575,35 @@ class NotePad(QWidget):
 
         self._toolbar = _FormattingToolbar(self._editor, ai_service, dark)
         root.addWidget(self._toolbar)
-        root.addWidget(self._editor, 1)
+
+        # ── Área de conteúdo: coluna TOC + editor ──────────────────────────
+        content_area = QWidget()
+        content_h = QHBoxLayout(content_area)
+        content_h.setContentsMargins(0, 0, 0, 0)
+        content_h.setSpacing(0)
+
+        # Coluna esquerda: botão de toggle + painel TOC
+        self._toc_col = QWidget()
+        self._toc_col.setFixedWidth(200)
+        toc_col_v = QVBoxLayout(self._toc_col)
+        toc_col_v.setContentsMargins(0, 0, 0, 0)
+        toc_col_v.setSpacing(0)
+
+        self._toc_toggle_btn = QPushButton("◀  Índice")
+        self._toc_toggle_btn.setFixedHeight(28)
+        self._toc_toggle_btn.setAutoDefault(False)
+        self._toc_toggle_btn.clicked.connect(self._toggle_toc)
+        self._apply_toc_toggle_style()
+        toc_col_v.addWidget(self._toc_toggle_btn)
+
+        self._toc_panel = _TocPanel(dark=dark)
+        self._toc_panel.heading_clicked.connect(self._goto_heading)
+        toc_col_v.addWidget(self._toc_panel, 1)
+
+        content_h.addWidget(self._toc_col)
+        content_h.addWidget(self._editor, 1)
+
+        root.addWidget(content_area, 1)
 
         # Auto-save com debounce de 2s.
         # Usa contentsChange (com args position/removed/added) em vez de
@@ -434,14 +614,79 @@ class NotePad(QWidget):
         self._save_timer.setSingleShot(True)
         self._save_timer.setInterval(2000)
         self._save_timer.timeout.connect(self._emit_changed)
+
+        self._toc_timer = QTimer(self)
+        self._toc_timer.setSingleShot(True)
+        self._toc_timer.setInterval(400)
+        self._toc_timer.timeout.connect(self._update_toc)
+
         self._editor.document().contentsChange.connect(self._on_content_change)
 
     def _on_content_change(self, _pos: int, removed: int, added: int):
         if removed > 0 or added > 0:
             self._save_timer.start()
+            self._toc_timer.start()
 
     def _emit_changed(self):
         self.notes_changed.emit(self._editor.toHtml())
+
+    def _apply_toc_toggle_style(self):
+        dark = self._dark
+        bg  = "#1E293B" if dark else "#F8FAFC"
+        brd = "#334155" if dark else "#E2E8F0"
+        fg  = "#94A3B8" if dark else "#475569"
+        hov = "#1E3A5F" if dark else "#E2E8F0"
+        self._toc_toggle_btn.setStyleSheet(f"""
+            QPushButton {{
+                background:{bg}; border:none;
+                border-bottom:1px solid {brd}; border-right:1px solid {brd};
+                color:{fg}; font-size:11px; font-weight:600;
+                text-align:left; padding-left:8px;
+            }}
+            QPushButton:hover {{ background:{hov}; }}
+        """)
+
+    def _restore_heading_states(self):
+        """Infere nível de título a partir do formato do primeiro fragmento do bloco."""
+        doc = self._editor.document()
+        block = doc.begin()
+        while block.isValid():
+            it = block.begin()
+            if not it.atEnd():
+                fmt  = it.fragment().charFormat()
+                size = fmt.fontPointSize()
+                bold = fmt.fontWeight() >= QFont.Weight.Bold
+                if bold and size >= 20:
+                    block.setUserState(1)
+                elif bold and size >= 14:
+                    block.setUserState(2)
+                elif bold and size >= 12:
+                    block.setUserState(3)
+                else:
+                    block.setUserState(0)
+            else:
+                block.setUserState(0)
+            block = block.next()
+
+    def _update_toc(self):
+        self._toc_panel.update_headings(self._editor.document())
+
+    def _toggle_toc(self):
+        self._toc_open = not self._toc_open
+        self._toc_panel.setVisible(self._toc_open)
+        if self._toc_open:
+            self._toc_col.setFixedWidth(200)
+            self._toc_toggle_btn.setText("◀  Índice")
+        else:
+            self._toc_col.setFixedWidth(32)
+            self._toc_toggle_btn.setText("▶")
+
+    def _goto_heading(self, pos: int):
+        cursor = self._editor.textCursor()
+        cursor.setPosition(pos)
+        self._editor.setTextCursor(cursor)
+        self._editor.ensureCursorVisible()
+        self._editor.setFocus()
 
     # ── API pública ───────────────────────────────────────────────────────────
 
@@ -461,6 +706,8 @@ class NotePad(QWidget):
         self._apply_bottom_margin()
         doc.blockSignals(False)
         self._save_timer.stop()
+        self._restore_heading_states()
+        self._update_toc()
 
     def get_html(self) -> str:
         return self._editor.toHtml()
@@ -471,6 +718,8 @@ class NotePad(QWidget):
     def set_dark(self, dark: bool):
         self._dark = dark
         self._toolbar.set_dark(dark)
+        self._toc_panel.set_dark(dark)
+        self._apply_toc_toggle_style()
 
     def import_comments(self, comments: list) -> str:
         """Converte lista de Comment em HTML e carrega no editor. Retorna o HTML."""
