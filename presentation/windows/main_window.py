@@ -2752,7 +2752,15 @@ class MainWindow(QMainWindow):
     def _on_download_failed(self, error: str):
         self._update_btn.setEnabled(True)
         self._update_btn.setText("Tentar novamente")
-        self._update_progress.setText(f"Erro: {error}")
+        self._update_progress.setText("Falhou — clique em Tentar novamente")
+        QMessageBox.warning(
+            self,
+            "Erro ao baixar atualização",
+            f"Não foi possível baixar a atualização:\n\n{error}\n\n"
+            "Verifique sua conexão e tente novamente.\n"
+            "Se o problema persistir, baixe manualmente em:\n"
+            "github.com/julimarmj/DemandFlow/releases",
+        )
 
     # ── Alert Timer ────────────────────────────────────────────────────────────
 

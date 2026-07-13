@@ -25,10 +25,13 @@ def _no_verify_ctx():
     return ctx
 
 def _urlopen(req, timeout=10):
-    """Tenta com SSL normal; se falhar por certificado, tenta sem verificação."""
+    """Tenta com SSL normal; qualquer falha aciona o retry sem verificação.
+    Redes corporativas com inspeção SSL podem lançar RemoteDisconnected,
+    ConnectionResetError, etc., além de ssl.SSLError — por isso capturamos
+    Exception genérica na primeira tentativa."""
     try:
         return urllib.request.urlopen(req, timeout=timeout)
-    except (ssl.SSLError, urllib.error.URLError):
+    except Exception:
         return urllib.request.urlopen(req, timeout=timeout, context=_no_verify_ctx())
 
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -102,7 +105,7 @@ class UpdateDownloader(QThread):
                 self._url,
                 headers={"User-Agent": "DemandFlow-Updater"},
             )
-            with _urlopen(req, timeout=60) as resp:
+            with _urlopen(req, timeout=300) as resp:
                 total = int(resp.headers.get("Content-Length", 0))
                 downloaded = 0
                 chunk = 8192
