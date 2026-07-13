@@ -94,7 +94,8 @@ class _FormattingToolbar(QFrame):
 
         # Tamanho de fonte
         self._size_combo = QComboBox()
-        self._size_combo.setFixedWidth(68)
+        self._size_combo.setObjectName("font_size_combo")
+        self._size_combo.setFixedWidth(62)
         self._size_combo.setFixedHeight(26)
         for s in ["8","9","10","11","12","14","16","18","20","24","28","32","36","48","72"]:
             self._size_combo.addItem(s)
