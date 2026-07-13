@@ -589,7 +589,7 @@ class NotePad(QWidget):
         self._toc_toggle_btn.setFixedHeight(28)
         self._toc_toggle_btn.setAutoDefault(False)
         self._toc_toggle_btn.clicked.connect(self._toggle_toc)
-        self._apply_toc_toggle_style()
+        self._set_toc_btn_open(True)
         toc_col_v.addWidget(self._toc_toggle_btn)
 
         self._toc_panel = _TocPanel(dark=dark)
@@ -632,18 +632,32 @@ class NotePad(QWidget):
     def _emit_changed(self):
         self.notes_changed.emit(self._editor.toHtml())
 
-    def _apply_toc_toggle_style(self):
+    def _set_toc_btn_open(self, open_: bool):
+        ic_color = "#94A3B8" if self._dark else "#475569"
+        if open_:
+            self._toc_toggle_btn.setIcon(
+                qta.icon("fa6s.chevron-left", color=ic_color))
+            self._toc_toggle_btn.setText(" Índice")
+        else:
+            self._toc_toggle_btn.setIcon(
+                qta.icon("fa6s.chevron-right", color=ic_color))
+            self._toc_toggle_btn.setText("")
+        self._apply_toc_toggle_style(open_)
+
+    def _apply_toc_toggle_style(self, open_: bool = True):
         dark = self._dark
         bg  = "#1E293B" if dark else "#F8FAFC"
         brd = "#334155" if dark else "#E2E8F0"
         fg  = "#94A3B8" if dark else "#475569"
         hov = "#1E3A5F" if dark else "#E2E8F0"
+        padding = "padding-left:6px;" if open_ else "padding:0;"
+        align   = "left" if open_ else "center"
         self._toc_toggle_btn.setStyleSheet(f"""
             QPushButton {{
                 background:{bg}; border:none;
                 border-bottom:1px solid {brd}; border-right:1px solid {brd};
                 color:{fg}; font-size:11px; font-weight:600;
-                text-align:left; padding-left:8px;
+                text-align:{align}; {padding}
             }}
             QPushButton:hover {{ background:{hov}; }}
         """)
@@ -681,11 +695,11 @@ class NotePad(QWidget):
         if self._toc_open:
             w = max(self._toc_open_width, 120)
             self._splitter.setSizes([w, total - w])
-            self._toc_toggle_btn.setText("◀  Índice")
+            self._set_toc_btn_open(True)
         else:
             self._toc_open_width = sizes[0]  # guarda largura atual
             self._splitter.setSizes([32, total - 32])
-            self._toc_toggle_btn.setText("▶")
+            self._set_toc_btn_open(False)
 
     def _goto_heading(self, pos: int):
         cursor = self._editor.textCursor()
@@ -725,7 +739,7 @@ class NotePad(QWidget):
         self._dark = dark
         self._toolbar.set_dark(dark)
         self._toc_panel.set_dark(dark)
-        self._apply_toc_toggle_style()
+        self._set_toc_btn_open(self._toc_open)
 
     def import_comments(self, comments: list) -> str:
         """Converte lista de Comment em HTML e carrega no editor. Retorna o HTML."""
