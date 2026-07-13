@@ -25,14 +25,21 @@ def _no_verify_ctx():
     return ctx
 
 def _urlopen(req, timeout=10):
-    """Tenta com SSL normal; qualquer falha aciona o retry sem verificação.
-    Redes corporativas com inspeção SSL podem lançar RemoteDisconnected,
-    ConnectionResetError, etc., além de ssl.SSLError — por isso capturamos
-    Exception genérica na primeira tentativa."""
+    """Tenta com SSL normal; qualquer falha aciona o retry sem verificação e
+    com ProxyHandler explícito (lê proxy do sistema).  Redes corporativas podem
+    bloquear objects.githubusercontent.com em conexão direta mas liberar via
+    proxy — ao passar context= diretamente ao urlopen, o opener gerado não
+    inclui ProxyHandler, causando WinError 10060.  build_opener garante que o
+    proxy do sistema seja respeitado no retry."""
     try:
         return urllib.request.urlopen(req, timeout=timeout)
     except Exception:
-        return urllib.request.urlopen(req, timeout=timeout, context=_no_verify_ctx())
+        ctx = _no_verify_ctx()
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler(),          # lê proxy do sistema/env
+            urllib.request.HTTPSHandler(context=ctx),
+        )
+        return opener.open(req, timeout=timeout)
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
