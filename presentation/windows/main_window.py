@@ -423,6 +423,11 @@ class MainWindow(QMainWindow):
 
         _s = QSettings("DemandFlow", "DemandFlow")
         self._dark = _s.value("dark_mode", False, type=bool)
+        geom = _s.value("window_geometry")
+        if geom:
+            self.restoreGeometry(geom)
+        else:
+            self.setWindowState(Qt.WindowState.WindowMaximized)
         self._current_view = "dashboard"
         self._assistant_dialog = None
         self._detail_windows: dict[int, _DemandFrame] = {}   # demand_id -> floating frame
@@ -2723,9 +2728,7 @@ class MainWindow(QMainWindow):
 
     def _on_update_available(self, version: str, url: str):
         self._update_url = url
-        self._update_lbl.setText(
-            f"Nova versão <b>{version}</b> disponível  (você tem <b>{__version__}</b>)"
-        )
+        self._update_lbl.setText(f"Nova versão <b>{version}</b> disponível")
         self._update_banner.show()
 
     def _do_update(self):
@@ -2788,4 +2791,6 @@ class MainWindow(QMainWindow):
         self._check_missing_hours()
 
     def closeEvent(self, event):
+        _s = QSettings("DemandFlow", "DemandFlow")
+        _s.setValue("window_geometry", self.saveGeometry())
         event.accept()
