@@ -498,11 +498,18 @@ class _TocPanel(QFrame):
     def __init__(self, dark=False, parent=None):
         super().__init__(parent)
         self._dark = dark
+        self._all_headings: list[tuple[int, str, int]] = []
         self._apply_styles()
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(6, 6, 6, 4)
+        layout.setSpacing(4)
+
+        self._search = QLineEdit()
+        self._search.setObjectName("search_input")
+        self._search.setPlaceholderText("🔍  Buscar títulos...")
+        self._search.textChanged.connect(self._apply_filter)
+        layout.addWidget(self._search)
 
         self._list = QListWidget()
         self._list.setFrameShape(QFrame.Shape.NoFrame)
@@ -529,21 +536,30 @@ class _TocPanel(QFrame):
         """)
 
     def update_headings(self, doc):
-        self._list.clear()
+        self._all_headings = []
         block = doc.begin()
         while block.isValid():
             state = block.userState()
             if state in (1, 2, 3):
                 text = block.text().strip()
                 if text:
-                    item = QListWidgetItem("  " * (state - 1) + text)
-                    item.setData(Qt.ItemDataRole.UserRole, block.position())
-                    f = item.font()
-                    f.setBold(state == 1)
-                    f.setPointSize(11 if state <= 2 else 10)
-                    item.setFont(f)
-                    self._list.addItem(item)
+                    self._all_headings.append((state, text, block.position()))
             block = block.next()
+        self._apply_filter(self._search.text())
+
+    def _apply_filter(self, query: str):
+        self._list.clear()
+        q = query.strip().lower()
+        for state, text, pos in self._all_headings:
+            if q and q not in text.lower():
+                continue
+            item = QListWidgetItem("  " * (state - 1) + text)
+            item.setData(Qt.ItemDataRole.UserRole, pos)
+            f = item.font()
+            f.setBold(state == 1)
+            f.setPointSize(11 if state <= 2 else 10)
+            item.setFont(f)
+            self._list.addItem(item)
 
     def set_dark(self, dark: bool):
         self._dark = dark
