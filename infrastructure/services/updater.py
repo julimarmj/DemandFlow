@@ -14,6 +14,7 @@ import json
 import shutil
 import zipfile
 import tempfile
+import subprocess
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -104,30 +105,55 @@ class UpdateDownloader(QThread):
         super().__init__(parent)
         self._url = url
 
+    def _download_urllib(self, zip_path: str):
+        req = urllib.request.Request(
+            self._url, headers={"User-Agent": "DemandFlow-Updater"}
+        )
+        with _urlopen(req, timeout=300) as resp:
+            total = int(resp.headers.get("Content-Length", 0))
+            downloaded = 0
+            with open(zip_path, "wb") as f:
+                while True:
+                    buf = resp.read(8192)
+                    if not buf:
+                        break
+                    f.write(buf)
+                    downloaded += len(buf)
+                    if total:
+                        self.progress.emit(int(downloaded * 100 / total))
+
+    def _download_powershell(self, zip_path: str):
+        """Fallback via PowerShell/WinINet: suporta proxy PAC e autenticação NTLM,
+        igual ao navegador — resolve WinError 10060 em redes corporativas."""
+        cmd = (
+            "[Net.ServicePointManager]::SecurityProtocol = "
+            "[Net.SecurityProtocolType]::Tls12; "
+            f'Invoke-WebRequest -Uri "{self._url}" '
+            f'-OutFile "{zip_path}" -UseBasicParsing'
+        )
+        r = subprocess.run(
+            ["powershell", "-ExecutionPolicy", "Bypass",
+             "-NonInteractive", "-Command", cmd],
+            capture_output=True,
+            timeout=350,
+        )
+        if r.returncode != 0:
+            err = r.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(err or "Falha no download via PowerShell")
+
     def run(self):
         tmp_dir = tempfile.mkdtemp(prefix="DemandFlow_update_")
         zip_path = os.path.join(tmp_dir, "update.zip")
         try:
-            req = urllib.request.Request(
-                self._url,
-                headers={"User-Agent": "DemandFlow-Updater"},
-            )
-            with _urlopen(req, timeout=300) as resp:
-                total = int(resp.headers.get("Content-Length", 0))
-                downloaded = 0
-                chunk = 8192
-                with open(zip_path, "wb") as f:
-                    while True:
-                        buf = resp.read(chunk)
-                        if not buf:
-                            break
-                        f.write(buf)
-                        downloaded += len(buf)
-                        if total:
-                            self.progress.emit(int(downloaded * 100 / total))
+            try:
+                self._download_urllib(zip_path)
+            except Exception:
+                # Rede corporativa com proxy PAC/NTLM: urllib não consegue
+                # autenticar via WinINet; PowerShell usa o mesmo stack do navegador.
+                self.progress.emit(0)
+                self._download_powershell(zip_path)
 
             self.progress.emit(100)
-
             self.progress.emit(101)   # sinaliza fase de extração
 
             extract_dir = os.path.join(tmp_dir, "extracted")
@@ -172,7 +198,6 @@ def apply_update(source_dir: str):
     if not bat.exists():
         return
 
-    import subprocess
     subprocess.Popen(
         [str(bat), source_dir, dest_dir, exe_path],
         creationflags=subprocess.CREATE_NEW_CONSOLE,
