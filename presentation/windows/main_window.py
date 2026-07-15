@@ -2761,6 +2761,7 @@ class MainWindow(QMainWindow):
         self._downloader = UpdateDownloader(self._update_url, self)
         self._downloader.progress.connect(
             lambda p: self._update_progress.setText(
+                "Conectando..." if p < 0 else
                 "Extraindo..." if p > 100 else f"{p}%"
             )
         )

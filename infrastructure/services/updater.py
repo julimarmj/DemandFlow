@@ -25,22 +25,68 @@ def _no_verify_ctx():
     ctx.verify_mode = ssl.CERT_NONE
     return ctx
 
-def _urlopen(req, timeout=10):
-    """Tenta com SSL normal; qualquer falha aciona o retry sem verificação e
-    com ProxyHandler explícito (lê proxy do sistema).  Redes corporativas podem
-    bloquear objects.githubusercontent.com em conexão direta mas liberar via
-    proxy — ao passar context= diretamente ao urlopen, o opener gerado não
-    inclui ProxyHandler, causando WinError 10060.  build_opener garante que o
-    proxy do sistema seja respeitado no retry."""
+def _pac_proxies(url: str):
+    """Resolve o proxy avaliando o script PAC/WPAD configurado no Windows
+    (AutoConfigURL), do mesmo jeito que o navegador faz. Cobre redes onde não
+    há proxy fixo em variável de ambiente nem no registro (ProxyServer vazio
+    com ProxyEnable=0) — só o .pac dita o proxy correto por domínio. Retorna
+    None se não houver PAC configurado ou a resolução falhar."""
     try:
-        return urllib.request.urlopen(req, timeout=timeout)
+        import pypac
+        pac = pypac.get_pac(timeout=8)
+        if pac is None:
+            return None
+        from urllib.parse import urlparse
+        host = urlparse(url).hostname or ""
+        result = pac.find_proxy_for_url(url, host)
+        for entry in result.split(";"):
+            entry = entry.strip()
+            if entry.upper().startswith("PROXY "):
+                addr = entry[6:].strip()
+                return {"http": f"http://{addr}", "https": f"http://{addr}"}
+        return None
     except Exception:
-        ctx = _no_verify_ctx()
+        return None
+
+def _urlopen(req, timeout=10):
+    """Tenta, em ordem: (1) conexão direta/SSL normal; (2) proxy do sistema via
+    ProxyHandler (variável de ambiente ou registro estático); (3) proxy
+    resolvido via PAC/WPAD.  Redes corporativas podem bloquear
+    objects.githubusercontent.com em conexão direta mas liberar via proxy — e
+    algumas máquinas só têm o proxy configurado por script .pac, sem variável
+    de ambiente nem registro estático, daí a etapa 3.
+
+    As duas primeiras tentativas usam um timeout curto: quando a rede bloqueia
+    de verdade (WinError 10060), o SO só desiste depois do timeout completo —
+    sem isso, um download de 300s ficaria "pendurado" até 2x nesse valor antes
+    de chegar na tentativa que de fato funciona."""
+    probe = min(timeout, 8)
+
+    try:
+        return urllib.request.urlopen(req, timeout=probe)
+    except Exception:
+        pass
+
+    ctx = _no_verify_ctx()
+    try:
         opener = urllib.request.build_opener(
             urllib.request.ProxyHandler(),          # lê proxy do sistema/env
             urllib.request.HTTPSHandler(context=ctx),
         )
-        return opener.open(req, timeout=timeout)
+        return opener.open(req, timeout=probe)
+    except Exception:
+        pass
+
+    proxies = _pac_proxies(req.full_url)
+    if not proxies:
+        raise RuntimeError(
+            "Não foi possível conectar (conexão direta, proxy do sistema e PAC falharam)"
+        )
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler(proxies),
+        urllib.request.HTTPSHandler(context=ctx),
+    )
+    return opener.open(req, timeout=timeout)   # tempo cheio pra tentativa que deve funcionar
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
@@ -144,6 +190,7 @@ class UpdateDownloader(QThread):
     def run(self):
         tmp_dir = tempfile.mkdtemp(prefix="DemandFlow_update_")
         zip_path = os.path.join(tmp_dir, "update.zip")
+        self.progress.emit(-1)   # sinaliza fase de conexão (antes de saber o tamanho)
         try:
             try:
                 self._download_urllib(zip_path)

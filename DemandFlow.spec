@@ -16,10 +16,18 @@ datas = [
     ('updater.bat', '.'),
 ]
 datas += collect_data_files('qtawesome')
+datas += collect_data_files('dukpy')       # motor JS (avaliação de scripts .pac)
+datas += collect_data_files('tldextract')  # tabela de sufixos públicos (pypac/requests-file)
 
 # cyhunspell e sua dependência cacheman são importados de dentro da extensão
 # .pyd compilada (Cython) — o modulegraph não detecta isso sozinho.
-hiddenimports = collect_submodules('hunspell') + collect_submodules('cacheman')
+# pypac/dukpy/tldextract: mesma cautela — dependências com extensão nativa ou
+# descoberta dinâmica de submódulos que o modulegraph pode não pegar sozinho.
+hiddenimports = (
+    collect_submodules('hunspell') + collect_submodules('cacheman')
+    + collect_submodules('pypac') + collect_submodules('dukpy')
+    + collect_submodules('tldextract') + collect_submodules('requests_file')
+)
 
 a = Analysis(
     ['main.py'],
