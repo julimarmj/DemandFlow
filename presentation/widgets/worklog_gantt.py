@@ -387,6 +387,7 @@ class _TimelineCanvas(QWidget):
     """Timeline rolável: cabeçalho (data + hora) e barras de sessão."""
 
     log_requested = pyqtSignal(object, object, object)   # demand_id, start_dt, end_dt
+    log_clicked   = pyqtSignal(object)                    # log — clique (sem arrastar) sobre uma barra existente
 
     def __init__(self, demand_order, demand_logs, demands_map, colors,
                  date_from: date, date_to: date, dark: bool, zoom: float = 1.0, parent=None):
@@ -419,6 +420,7 @@ class _TimelineCanvas(QWidget):
         self._drag_day_idx  = 0
         self._drag_x0       = 0
         self._drag_x1       = 0
+        self._press_log     = None
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -605,7 +607,7 @@ class _TimelineCanvas(QWidget):
                         f"  ({log.duration_display})"
                         + (f"\n{log.note}" if log.note else "")
                     )
-                    self._ttmap.append((bx, by, bw, bh, tip))
+                    self._ttmap.append((bx, by, bw, bh, tip, log))
 
         # Linha vermelha "agora"
         if now_x is not None:
@@ -664,6 +666,12 @@ class _TimelineCanvas(QWidget):
         did = self._order[ri]
         drag_id = None if did is _GENERAL_KEY else did   # None = atividade avulsa
 
+        self._press_log = None
+        for (bx, by, bw, bh, _tip, log) in self._ttmap:
+            if bx <= x <= bx + bw and by <= y <= by + bh:
+                self._press_log = log
+                break
+
         day_idx = min(max(0, x // self._day_w), self._n_days - 1)
         self._drag_did     = drag_id
         self._drag_row_y   = HEADER_H + ri * ROW_H
@@ -683,7 +691,7 @@ class _TimelineCanvas(QWidget):
             return
 
         px, py = event.pos().x(), event.pos().y()
-        for (x, y, w, h, tip) in self._ttmap:
+        for (x, y, w, h, tip, _log) in self._ttmap:
             if x <= px <= x + w and y <= py <= y + h:
                 self.setToolTip(tip)
                 return
@@ -692,6 +700,16 @@ class _TimelineCanvas(QWidget):
 
     def mouseReleaseEvent(self, event):
         if self._dragging:
+            if self._drag_x0 == self._drag_x1 and self._press_log is not None:
+                # Clique simples (sem arrastar) sobre uma barra existente → editar
+                log = self._press_log
+                self._dragging  = False
+                self._drag_did  = None
+                self._press_log = None
+                self.update()
+                self.log_clicked.emit(log)
+                return
+
             x0, x1 = sorted((self._drag_x0, self._drag_x1))
             day_idx = self._drag_day_idx
             day_x   = self._day_x(day_idx)
@@ -744,6 +762,7 @@ class WorklogGanttWidget(QWidget):
     demand_pinned        = pyqtSignal(int)                      # demand_id
     demand_unpinned      = pyqtSignal(int)                      # demand_id
     demand_label_clicked = pyqtSignal(int)                      # demand_id — abrir detalhes
+    log_edit_requested   = pyqtSignal(object)                    # log — clique sobre uma barra existente
 
     def __init__(self, logs, demands_map, date_from: date, date_to: date,
                  dark: bool = False, zoom: float = 1.0, extra_demand_ids=None, parent=None):
@@ -781,6 +800,7 @@ class WorklogGanttWidget(QWidget):
         canvas = _TimelineCanvas(order, by_demand, demands_map, colors,
                                  date_from, date_to, dark, zoom=zoom)
         canvas.log_requested.connect(self.log_requested)
+        canvas.log_clicked.connect(self.log_edit_requested)
         self._tscroll.setWidget(canvas)
         layout.addWidget(self._tscroll)
 

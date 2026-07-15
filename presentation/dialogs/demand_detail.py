@@ -4,7 +4,7 @@ Visualização completa com comentários, histórico, status e arquivos.
 """
 
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 import qtawesome as qta
 from PyQt6.QtWidgets import (
     QCheckBox, QDateEdit, QDateTimeEdit, QDialog, QHeaderView, QLineEdit, QMessageBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QFileDialog
 )
 from presentation.widgets.note_pad import NotePad
-from PyQt6.QtCore import QDate, QDateTime, QTime, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QDate, QDateTime, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 import os
 
@@ -21,6 +21,7 @@ from infrastructure.services.work_hours import effective_seconds
 from presentation.widgets.common_widgets import status_badge, priority_badge, BadgeLabel, AITextEdit
 from presentation.widgets.spell_check import SpellCheckTextEdit
 from presentation.widgets.file_manager import FileManagerWidget
+from presentation.dialogs.general_worklog_dialog import EditWorkLogDialog
 
 STATUS_COLORS = {
     Status.NAO_INICIADA: ("#F3F4F6", "#6B7280"),
@@ -1631,91 +1632,12 @@ class DemandDetailDialog(QDialog):
             self._wl_edit_log(self._wl_logs_cache[row])
 
     def _wl_edit_log(self, wl):
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Editar Apontamento")
-        dlg.setMinimumWidth(360)
-        v = QVBoxLayout(dlg)
-        v.setContentsMargins(20, 16, 20, 16)
-        v.setSpacing(10)
-
-        row1 = QHBoxLayout()
-        row1.setSpacing(16)
-
-        start_col = QVBoxLayout()
-        start_col.setSpacing(3)
-        _l = QLabel("Início"); _l.setObjectName("label_muted"); start_col.addWidget(_l)
-        inp_start = QDateTimeEdit()
-        inp_start.setDisplayFormat("dd/MM HH:mm")
-        inp_start.setCalendarPopup(True)
-        inp_start.setDateTime(QDateTime(
-            QDate(wl.started_at.year, wl.started_at.month, wl.started_at.day),
-            QTime(wl.started_at.hour, wl.started_at.minute),
-        ))
-        start_col.addWidget(inp_start)
-        row1.addLayout(start_col)
-
-        end_col = QVBoxLayout()
-        end_col.setSpacing(3)
-        _l = QLabel("Fim"); _l.setObjectName("label_muted"); end_col.addWidget(_l)
-        inp_end = QDateTimeEdit()
-        inp_end.setDisplayFormat("dd/MM HH:mm")
-        inp_end.setCalendarPopup(True)
-        ended = wl.ended_at or (wl.started_at + timedelta(seconds=wl.duration_seconds))
-        inp_end.setDateTime(QDateTime(
-            QDate(ended.year, ended.month, ended.day),
-            QTime(ended.hour, ended.minute),
-        ))
-        end_col.addWidget(inp_end)
-        row1.addLayout(end_col)
-        v.addLayout(row1)
-
-        _l = QLabel("Nota"); _l.setObjectName("label_muted")
-        v.addWidget(_l)
-        inp_note = SpellCheckTextEdit()
-        inp_note.setFixedHeight(36)
-        inp_note.setText(wl.note or "")
-        v.addWidget(inp_note)
-
-        btns = QHBoxLayout()
-        del_btn = QPushButton("  Excluir")
-        del_btn.setIcon(qta.icon("fa6s.trash", color="#EF4444"))
-        del_btn.setAutoDefault(False)
-        def _do_delete():
-            dlg.reject()
-            self._wl_delete(wl)
-        del_btn.clicked.connect(_do_delete)
-        btns.addWidget(del_btn)
-        btns.addStretch()
-        cancel_btn = QPushButton("Cancelar")
-        cancel_btn.setAutoDefault(False)
-        cancel_btn.clicked.connect(dlg.reject)
-        btns.addWidget(cancel_btn)
-        save_btn = QPushButton("Salvar")
-        save_btn.setObjectName("btn_primary")
-        save_btn.setAutoDefault(False)
-        btns.addWidget(save_btn)
-        v.addLayout(btns)
-
-        def _try_save():
-            qs, qe = inp_start.dateTime(), inp_end.dateTime()
-            start = datetime(qs.date().year(), qs.date().month(), qs.date().day(),
-                             qs.time().hour(), qs.time().minute())
-            end   = datetime(qe.date().year(), qe.date().month(), qe.date().day(),
-                             qe.time().hour(), qe.time().minute())
-            if end <= start:
-                QMessageBox.warning(dlg, "Erro", "O horário de fim deve ser após o início.")
-                return
-            wl.started_at = start
-            wl.ended_at = end
-            wl.duration_seconds = int((end - start).total_seconds())
-            wl.note = inp_note.text().strip()
-            dlg.accept()
-        save_btn.clicked.connect(_try_save)
-
-        if dlg.exec():
-            self._uc.update_work_log(wl)
-            self._wl_refresh()
-            self.demand_updated.emit(self.demand)
+        dlg = EditWorkLogDialog(self._uc, wl, dark=self._dark, parent=self)
+        dlg.saved.connect(self._wl_refresh)
+        dlg.saved.connect(lambda: self.demand_updated.emit(self.demand))
+        dlg.deleted.connect(self._wl_refresh)
+        dlg.deleted.connect(lambda: self.demand_updated.emit(self.demand))
+        dlg.exec()
 
     def _get_tab_index(self, text_prefix: str) -> int:
         for i in range(self.tabs.count()):

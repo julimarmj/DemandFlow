@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QHeaderView, QMessageBox, QWidget,
 )
 from presentation.widgets.spell_check import SpellCheckLineEdit, SpellCheckTextEdit
-from PyQt6.QtCore import Qt, QDateTime, pyqtSignal
+from PyQt6.QtCore import Qt, QDateTime, QSize, pyqtSignal
 
 _CATEGORIES = [
     "Suporte a usuário",
@@ -25,6 +25,125 @@ _CATEGORIES = [
 def _fmt(secs: int) -> str:
     h, m = secs // 3600, (secs % 3600) // 60
     return f"{h}h{m:02d}min" if h else f"{m}min"
+
+
+class EditWorkLogDialog(QDialog):
+    """Editar um apontamento já registrado (avulso ou de demanda), aberto pela
+    lista de Atividades Avulsas, pela aba Apontamentos ou por clique no Gantt."""
+
+    saved   = pyqtSignal()
+    deleted = pyqtSignal()
+
+    def __init__(self, use_cases, worklog, dark: bool = False, parent=None):
+        super().__init__(parent)
+        self._uc   = use_cases
+        self._wl   = worklog
+        self._dark = dark
+        self._is_avulsa = worklog.demand_id is None
+        self.setWindowTitle("Editar Atividade Avulsa" if self._is_avulsa else "Editar Apontamento")
+        self.setMinimumWidth(420)
+        self._build()
+
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 20, 20, 20)
+        root.setSpacing(10)
+
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("Início:"))
+        self._inp_start = QDateTimeEdit()
+        self._inp_start.setDisplayFormat("dd/MM/yyyy HH:mm")
+        self._inp_start.setCalendarPopup(True)
+        self._inp_start.setDateTime(QDateTime(self._wl.started_at))
+        row1.addWidget(self._inp_start, 1)
+        root.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Fim:"))
+        self._inp_end = QDateTimeEdit()
+        self._inp_end.setDisplayFormat("dd/MM/yyyy HH:mm")
+        self._inp_end.setCalendarPopup(True)
+        ended = self._wl.ended_at or (self._wl.started_at + timedelta(seconds=self._wl.duration_seconds))
+        self._inp_end.setDateTime(QDateTime(ended))
+        row2.addWidget(self._inp_end, 1)
+        root.addLayout(row2)
+
+        self._inp_cat = None
+        if self._is_avulsa:
+            row3 = QHBoxLayout()
+            row3.addWidget(QLabel("Categoria:"))
+            self._inp_cat = QComboBox()
+            self._inp_cat.setEditable(True)
+            self._inp_cat.addItems(_CATEGORIES)
+            self._inp_cat.setCurrentText(self._wl.category or "")
+            row3.addWidget(self._inp_cat, 1)
+            root.addLayout(row3)
+
+        root.addWidget(QLabel("Nota:"))
+        self._inp_note = SpellCheckTextEdit()
+        self._inp_note.setPlaceholderText("Opcional…")
+        self._inp_note.setFixedHeight(70)
+        self._inp_note.setText(self._wl.note or "")
+        root.addWidget(self._inp_note)
+
+        btn_row = QHBoxLayout()
+        del_btn = QPushButton("  Excluir")
+        del_btn.setIcon(qta.icon("fa6s.trash", color="#EF4444"))
+        del_btn.setAutoDefault(False)
+        del_btn.clicked.connect(self._delete)
+        btn_row.addWidget(del_btn)
+        btn_row.addStretch()
+        cancel_btn = QPushButton("Cancelar")
+        cancel_btn.setAutoDefault(False)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+
+        save_btn = QPushButton("  Salvar")
+        save_btn.setIcon(qta.icon("fa6s.check", color="#FFFFFF"))
+        save_btn.setObjectName("btn_primary")
+        save_btn.setAutoDefault(False)
+        save_btn.clicked.connect(self._save)
+        btn_row.addWidget(save_btn)
+        root.addLayout(btn_row)
+
+    def _save(self):
+        qs = self._inp_start.dateTime()
+        qe = self._inp_end.dateTime()
+        start = datetime(qs.date().year(), qs.date().month(), qs.date().day(),
+                         qs.time().hour(), qs.time().minute())
+        end   = datetime(qe.date().year(), qe.date().month(), qe.date().day(),
+                         qe.time().hour(), qe.time().minute())
+        if end <= start:
+            QMessageBox.warning(self, "Erro", "Horário de fim deve ser após o início.")
+            return
+
+        self._wl.started_at = start
+        self._wl.ended_at = end
+        self._wl.duration_seconds = int((end - start).total_seconds())
+        if self._inp_cat is not None:
+            self._wl.category = self._inp_cat.currentText()
+        self._wl.note = self._inp_note.text().strip()
+
+        self._uc.update_work_log(self._wl)
+        self.saved.emit()
+        self.accept()
+
+    def _delete(self):
+        r = QMessageBox.question(
+            self, "Confirmar",
+            f"Excluir {'atividade' if self._is_avulsa else 'apontamento'} de "
+            f"{_fmt(self._wl.duration_seconds)} em {self._wl.started_at.strftime('%d/%m/%Y %H:%M')}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if r == QMessageBox.StandardButton.Yes:
+            self._uc.delete_work_log(self._wl.id, self._wl.demand_id)
+            self.deleted.emit()
+            self.accept()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            return
+        super().keyPressEvent(event)
 
 
 class GeneralWorkLogDialog(QDialog):
@@ -144,16 +263,34 @@ class GeneralWorkLogDialog(QDialog):
                 note_dur += f"  •  {wl.note}"
             self._table.setItem(row, 4, QTableWidgetItem(note_dur))
 
+            edit_btn = QPushButton()
+            edit_btn.setIcon(qta.icon("fa6s.pen", color="#64748B"))
+            edit_btn.setIconSize(QSize(14, 14))
+            edit_btn.setFixedSize(26, 26)
+            edit_btn.setAutoDefault(False)
+            edit_btn.setStyleSheet("border: none; background: transparent; padding: 0;")
+            edit_btn.clicked.connect(lambda _, w=wl: self.edit_entry(w))
+
             del_btn = QPushButton()
             del_btn.setIcon(qta.icon("fa6s.trash", color="#EF4444"))
+            del_btn.setIconSize(QSize(14, 14))
             del_btn.setFixedSize(26, 26)
             del_btn.setAutoDefault(False)
-            del_btn.setStyleSheet("border: none; background: transparent;")
+            del_btn.setStyleSheet("border: none; background: transparent; padding: 0;")
             del_btn.clicked.connect(lambda _, w=wl: self._delete(w))
-            self._table.setCellWidget(row, 5, del_btn)
+
+            actions_wrap = QWidget()
+            wl_layout = QHBoxLayout(actions_wrap)
+            wl_layout.setContentsMargins(0, 0, 0, 0)
+            wl_layout.setSpacing(2)
+            wl_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            wl_layout.addWidget(edit_btn)
+            wl_layout.addWidget(del_btn)
+            self._table.setCellWidget(row, 5, actions_wrap)
 
         self._table.resizeColumnsToContents()
-        self._table.setColumnWidth(5, 40)
+        self._table.setColumnWidth(5, 72)
+        self._table.resizeRowsToContents()
 
     def _add(self):
         qs = self._inp_start.dateTime()
@@ -179,6 +316,14 @@ class GeneralWorkLogDialog(QDialog):
         self._inp_note.clear()
         self._load()
         self.log_added.emit()
+
+    def edit_entry(self, wl):
+        dlg = EditWorkLogDialog(self._uc, wl, dark=self._dark, parent=self)
+        dlg.saved.connect(self._load)
+        dlg.saved.connect(self.log_added)
+        dlg.deleted.connect(self._load)
+        dlg.deleted.connect(self.log_added)
+        dlg.exec()
 
     def _delete(self, wl):
         r = QMessageBox.question(

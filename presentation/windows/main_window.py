@@ -33,7 +33,7 @@ from presentation.dialogs.demand_detail import DemandDetailDialog
 from presentation.dialogs.assistant_dialog import AssistantDialog
 from presentation.widgets.calendar_delegate import IconCalendarWidget
 from presentation.dialogs.worklog_dialog import WorkLogDialog
-from presentation.dialogs.general_worklog_dialog import GeneralWorkLogDialog
+from presentation.dialogs.general_worklog_dialog import GeneralWorkLogDialog, EditWorkLogDialog
 from presentation.widgets.worklog_gantt import WorklogGanttWidget
 from presentation.widgets.capacity_grid import CapacityGridWidget
 from presentation.widgets.spell_check import SpellCheckLineEdit
@@ -1511,6 +1511,14 @@ class MainWindow(QMainWindow):
         # Alinhado à direita, imediatamente acima do gráfico.
         gantt_toolbar = QHBoxLayout()
         gantt_toolbar.setSpacing(6)
+
+        avulsa_btn = QPushButton("  Atividades Avulsas")
+        avulsa_btn.setIcon(qta.icon("fa6s.bolt", color="#F59E0B"))
+        avulsa_btn.setAutoDefault(False)
+        avulsa_btn.setToolTip("Ver, registrar e excluir atividades sem demanda associada")
+        avulsa_btn.clicked.connect(self._open_general_worklog)
+        gantt_toolbar.addWidget(avulsa_btn)
+
         gantt_toolbar.addStretch()
 
         zoom_out_btn = QPushButton()
@@ -1536,13 +1544,19 @@ class MainWindow(QMainWindow):
         gantt_toolbar.addWidget(zoom_in_btn)
 
         # ── Gantt + toolbar agrupados para ficar sempre colados ──────────────
+        # Preferred/Maximum + AlignTop: sem isso, com poucas linhas o Gantt
+        # (altura fixa) fica centralizado dentro do espaço sobrando do
+        # QScrollArea em vez de colado no topo, abrindo um vão acima dele.
         gantt_section = QWidget()
+        gantt_section.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         gs_layout = QVBoxLayout(gantt_section)
         gs_layout.setContentsMargins(0, 0, 0, 0)
         gs_layout.setSpacing(2)
+        gs_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         gs_layout.addLayout(gantt_toolbar)
 
         self._hours_gantt_frame = QWidget()
+        self._hours_gantt_frame.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         gs_layout.addWidget(self._hours_gantt_frame)
 
         v.addWidget(gantt_section)
@@ -1616,6 +1630,7 @@ class MainWindow(QMainWindow):
             gl = QVBoxLayout(gf)
             gl.setContentsMargins(0, 0, 0, 0)
             gl.setSpacing(0)
+            gl.setAlignment(Qt.AlignmentFlag.AlignTop)
         while gl.count():
             item = gl.takeAt(0)
             if item.widget():
@@ -1635,6 +1650,7 @@ class MainWindow(QMainWindow):
         gantt.demand_pinned.connect(self._on_gantt_demand_pinned)
         gantt.demand_unpinned.connect(self._on_gantt_demand_unpinned)
         gantt.demand_label_clicked.connect(self._on_gantt_demand_label_clicked)
+        gantt.log_edit_requested.connect(self._on_gantt_log_edit_requested)
         gl.addWidget(gantt)
 
     # Horário de almoço descontado automaticamente nos apontamentos via Gantt
@@ -1797,6 +1813,12 @@ class MainWindow(QMainWindow):
         dlg = GeneralWorkLogDialog(self._uc, dark=self._dark, parent=self)
         dlg.log_added.connect(self._refresh_reports)
         dlg.show()
+
+    def _on_gantt_log_edit_requested(self, worklog):
+        dlg = EditWorkLogDialog(self._uc, worklog, dark=self._dark, parent=self)
+        dlg.saved.connect(self._refresh_reports)
+        dlg.deleted.connect(self._refresh_reports)
+        dlg.exec()
 
     # ── Planning View (capacidade/carga de horas por semana) ───────────────────
 
