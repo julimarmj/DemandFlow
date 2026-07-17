@@ -5,7 +5,6 @@ Visualização completa com comentários, histórico, status e arquivos.
 
 
 from datetime import date, datetime
-import re
 import qtawesome as qta
 from PyQt6.QtWidgets import (
     QCheckBox, QDateEdit, QDateTimeEdit, QDialog, QHeaderView, QLineEdit, QMessageBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -17,18 +16,7 @@ from PyQt6.QtCore import QDate, QDateTime, QSize, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices
 import os
 
-# Demandas importadas do ServiceNow têm o número do chamado como prefixo do
-# título (ex: "T2DMND0049050 - Elaborar plano..."). Usado pra montar o link
-# de abrir no ServiceNow sem precisar do sys_id (que não é derivável do
-# número — são identificadores independentes).
-_SERVICENOW_NUMBER_RE = re.compile(r"^(T\dDMND\d+)")
-_SERVICENOW_URL = "https://arcelorbr.service-now.com/tsp2_demand.do?sysparm_query=number={}"
-
-
-def _servicenow_number(title: str):
-    m = _SERVICENOW_NUMBER_RE.match(title or "")
-    return m.group(1) if m else None
-
+from core.servicenow import extract_number as _servicenow_number, demand_url as _servicenow_url
 from core.domain.entities import Demand, Status, CommentType, Milestone, Reminder
 from infrastructure.services.work_hours import effective_seconds
 from presentation.widgets.common_widgets import status_badge, priority_badge, BadgeLabel, AITextEdit
@@ -972,7 +960,7 @@ class DemandDetailDialog(QDialog):
     def _open_servicenow(self):
         number = _servicenow_number(self.demand.title)
         if number:
-            QDesktopServices.openUrl(QUrl(_SERVICENOW_URL.format(number)))
+            QDesktopServices.openUrl(QUrl(_servicenow_url(number)))
 
     def _clear_layout(self, layout):
         while layout.count():
