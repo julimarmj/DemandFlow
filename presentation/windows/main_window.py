@@ -37,7 +37,11 @@ from presentation.dialogs.general_worklog_dialog import GeneralWorkLogDialog, Ed
 from presentation.widgets.worklog_gantt import WorklogGanttWidget
 from presentation.widgets.capacity_grid import CapacityGridWidget
 from presentation.widgets.spell_check import SpellCheckLineEdit
-from infrastructure.services.updater import UpdateChecker, UpdateDownloader, apply_update
+from infrastructure.services.updater import (
+    UpdateChecker, UpdateDownloader, apply_update,
+    save_pending_changelog, pop_pending_changelog,
+)
+from presentation.dialogs.whats_new_dialog import WhatsNewDialog
 from version import __version__
 
 _MONTHS_PT = [
@@ -452,6 +456,8 @@ class MainWindow(QMainWindow):
 
         self._update_banner  = None   # QFrame criado sob demanda
         self._update_url     = ""
+        self._update_version = ""
+        self._update_notes   = ""
         self._downloader     = None
 
         self._build_ui()
@@ -460,6 +466,7 @@ class MainWindow(QMainWindow):
         self._start_alert_timer()
         QTimer.singleShot(900, self._maybe_check_missing_hours)
         QTimer.singleShot(3000, self._start_update_check)
+        QTimer.singleShot(600, self._maybe_show_whats_new)
 
     # ── UI Build ──────────────────────────────────────────────────────────────
 
@@ -2748,10 +2755,20 @@ class MainWindow(QMainWindow):
         self._checker.update_available.connect(self._on_update_available)
         self._checker.start()
 
-    def _on_update_available(self, version: str, url: str):
+    def _on_update_available(self, version: str, url: str, notes: str):
         self._update_url = url
+        self._update_version = version
+        self._update_notes = notes
         self._update_lbl.setText(f"Nova versão <b>{version}</b> disponível")
         self._update_banner.show()
+
+    def _maybe_show_whats_new(self):
+        pending = pop_pending_changelog()
+        if not pending:
+            return
+        dlg = WhatsNewDialog(pending.get("version", ""), pending.get("notes", ""),
+                             dark=self._dark, parent=self)
+        dlg.exec()
 
     def _do_update(self):
         self._update_btn.setEnabled(False)
@@ -2770,6 +2787,7 @@ class MainWindow(QMainWindow):
         self._downloader.start()
 
     def _on_download_ready(self, source_dir: str):
+        save_pending_changelog(self._update_version, self._update_notes)
         apply_update(source_dir)
 
     def _on_download_failed(self, error: str):

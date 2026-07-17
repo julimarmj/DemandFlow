@@ -5,6 +5,7 @@ Visualização completa com comentários, histórico, status e arquivos.
 
 
 from datetime import date, datetime
+import re
 import qtawesome as qta
 from PyQt6.QtWidgets import (
     QCheckBox, QDateEdit, QDateTimeEdit, QDialog, QHeaderView, QLineEdit, QMessageBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -12,9 +13,21 @@ from PyQt6.QtWidgets import (
     QTabWidget, QFileDialog
 )
 from presentation.widgets.note_pad import NotePad
-from PyQt6.QtCore import QDate, QDateTime, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import QDate, QDateTime, QSize, Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QColor, QDesktopServices
 import os
+
+# Demandas importadas do ServiceNow têm o número do chamado como prefixo do
+# título (ex: "T2DMND0049050 - Elaborar plano..."). Usado pra montar o link
+# de abrir no ServiceNow sem precisar do sys_id (que não é derivável do
+# número — são identificadores independentes).
+_SERVICENOW_NUMBER_RE = re.compile(r"^(T\dDMND\d+)")
+_SERVICENOW_URL = "https://arcelorbr.service-now.com/tsp2_demand.do?sysparm_query=number={}"
+
+
+def _servicenow_number(title: str):
+    m = _SERVICENOW_NUMBER_RE.match(title or "")
+    return m.group(1) if m else None
 
 from core.domain.entities import Demand, Status, CommentType, Milestone, Reminder
 from infrastructure.services.work_hours import effective_seconds
@@ -171,6 +184,12 @@ class DemandDetailDialog(QDialog):
         self.badges_row.addStretch()
 
         _ic = "#94A3B8" if self._dark else "#64748B"
+
+        self._sn_btn = QPushButton("  Abrir no ServiceNow")
+        self._sn_btn.setIcon(qta.icon("fa6s.arrow-up-right-from-square", color=_ic))
+        self._sn_btn.clicked.connect(self._open_servicenow)
+        self.badges_row.addWidget(self._sn_btn)
+        self._update_servicenow_button()
 
         self._edit_btn = QPushButton("  Editar")
         self._edit_btn.setIcon(qta.icon("fa6s.pen", color=_ic))
@@ -944,6 +963,17 @@ class DemandDetailDialog(QDialog):
     def _on_edit(self):
         self.edit_requested.emit(self.demand)
 
+    def _update_servicenow_button(self):
+        number = _servicenow_number(self.demand.title)
+        self._sn_btn.setVisible(number is not None)
+        if number:
+            self._sn_btn.setToolTip(f"Abrir {number} no ServiceNow")
+
+    def _open_servicenow(self):
+        number = _servicenow_number(self.demand.title)
+        if number:
+            QDesktopServices.openUrl(QUrl(_SERVICENOW_URL.format(number)))
+
     def _clear_layout(self, layout):
         while layout.count():
             item = layout.takeAt(0)
@@ -1116,6 +1146,8 @@ class DemandDetailDialog(QDialog):
             self.title_lbl.setText(self.demand.title)
         if hasattr(self, "desc_lbl"):
             self.desc_lbl.setText(self.demand.description)
+        if hasattr(self, "_sn_btn"):
+            self._update_servicenow_button()
 
         # Atualiza só os badges dinâmicos — botões fixos nunca são tocados
         if hasattr(self, "_dynamic_badges_layout"):

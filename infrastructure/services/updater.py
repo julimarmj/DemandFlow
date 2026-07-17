@@ -107,7 +107,7 @@ def _api_url() -> str:
 
 class UpdateChecker(QThread):
     """Verifica silenciosamente se há nova versão no startup."""
-    update_available = pyqtSignal(str, str)   # (nova_versao, download_url)
+    update_available = pyqtSignal(str, str, str)   # (nova_versao, download_url, notas)
 
     def run(self):
         if not GITHUB_REPO:
@@ -136,9 +136,46 @@ class UpdateChecker(QThread):
                 return
 
             if _parse_version(latest) > _parse_version(__version__):
-                self.update_available.emit(latest, download_url)
+                self.update_available.emit(latest, download_url, data.get("body", "") or "")
         except Exception:
             pass
+
+
+def _data_dir() -> Path:
+    d = Path.home() / ".demandflow"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def save_pending_changelog(version: str, notes: str):
+    """Grava as notas da versão baixada para exibir assim que o app reabrir
+    depois do update (o processo atual é encerrado antes de poder mostrar
+    qualquer coisa, então isso precisa sobreviver ao restart)."""
+    if not notes:
+        return
+    try:
+        path = _data_dir() / "pending_changelog.json"
+        path.write_text(json.dumps({"version": version, "notes": notes}), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def pop_pending_changelog():
+    """Lê e apaga as notas pendentes (se houver) — só deve aparecer uma vez,
+    na primeira abertura após o update."""
+    path = _data_dir() / "pending_changelog.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        data = None
+    finally:
+        try:
+            path.unlink()
+        except Exception:
+            pass
+    return data
 
 
 class UpdateDownloader(QThread):
