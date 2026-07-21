@@ -195,6 +195,12 @@ class MiniBarChart(QWidget):
             item_frame = QFrame()
             item_frame.setObjectName("mbc_item")
             item_frame.setCursor(Qt.CursorShape.PointingHandCursor)
+            # Policy "Minimum" em vez do padrão "Preferred": sem isso, quando a
+            # janela fica pequena demais pra caber todas as linhas do card
+            # (ex: "Por Status" com 6 itens), o layout comprime cada linha
+            # abaixo do que o texto precisa em vez de deixar o card crescer /
+            # rolar — o resultado é texto cortado/sobreposto.
+            item_frame.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
             item_frame.setStyleSheet(
                 "QFrame#mbc_item { background: transparent; border-radius: 4px; }"
                 f"QFrame#mbc_item:hover {{ background: {'#1E293B' if dark else '#F8FAFC'}; }}"
@@ -206,10 +212,15 @@ class MiniBarChart(QWidget):
             header = QHBoxLayout()
             name_lbl = QLabel(item["label"])
             name_lbl.setStyleSheet(f"font-size: 12px; color: {'#E2E8F0' if dark else '#1E293B'}; background: transparent;")
+            # Sem isso, quando o card fica estreito demais pro texto caber
+            # numa linha só, o QLabel (que não corta nem quebra por padrão)
+            # deixa o texto vazar por cima da barra/número ao lado em vez de
+            # simplesmente quebrar linha.
+            name_lbl.setWordWrap(True)
             val_lbl  = QLabel(str(item["value"]))
             val_lbl.setStyleSheet(f"font-size: 12px; font-weight: 600; color: {'#94A3B8' if dark else '#64748B'}; background: transparent;")
-            header.addWidget(name_lbl)
-            header.addStretch()
+            val_lbl.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+            header.addWidget(name_lbl, 1)
             header.addWidget(val_lbl)
             row.addLayout(header)
 

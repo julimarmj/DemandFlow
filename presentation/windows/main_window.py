@@ -691,19 +691,30 @@ class MainWindow(QMainWindow):
         charts_row = QHBoxLayout()
         charts_row.setSpacing(16)
 
+        # Policy "Minimum" (não o padrão "Preferred"): sem isso, quando a
+        # janela é redimensionada pra ficar pequena, o QHBoxLayout comprime
+        # esses cards abaixo do que o conteúdo (MiniBarChart) realmente
+        # precisa em vez de deixar a página inteira (que já está num
+        # QScrollArea) rolar — o resultado é texto cortado/sobreposto nos
+        # cards com mais linhas ("Por Status", "Por Categoria").
+        card_size_policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+
         self.chart_priority_frame = QFrame()
         self.chart_priority_frame.setObjectName("card")
         self.chart_priority_frame.setMinimumHeight(200)
+        self.chart_priority_frame.setSizePolicy(card_size_policy)
         charts_row.addWidget(self.chart_priority_frame)
 
         self.chart_status_frame = QFrame()
         self.chart_status_frame.setObjectName("card")
         self.chart_status_frame.setMinimumHeight(200)
+        self.chart_status_frame.setSizePolicy(card_size_policy)
         charts_row.addWidget(self.chart_status_frame)
 
         self.chart_category_frame = QFrame()
         self.chart_category_frame.setObjectName("card")
         self.chart_category_frame.setMinimumHeight(200)
+        self.chart_category_frame.setSizePolicy(card_size_policy)
         charts_row.addWidget(self.chart_category_frame)
 
         v.addLayout(charts_row)
