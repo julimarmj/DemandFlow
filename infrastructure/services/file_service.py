@@ -4,6 +4,7 @@ DemandFlow - Serviço de Sistema de Arquivos
 import os
 import re
 import shutil
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -177,9 +178,37 @@ class DemandFileService:
 
     def find_demand_root(self, demand_id: int) -> Optional[Path]:
         prefix = f"{demand_id:04d}_"
-        for entry in self.base_dir.iterdir():
-            if entry.is_dir() and entry.name.startswith(prefix):
-                return entry
+
+        def _scan() -> Optional[Path]:
+            matches = [
+                e for e in self.base_dir.iterdir()
+                if e.is_dir() and e.name.startswith(prefix)
+            ]
+            if not matches:
+                return None
+            if len(matches) == 1:
+                return matches[0]
+            # Duplicata órfã (não deveria acontecer mais com o retry abaixo,
+            # mas se acontecer): o bug sempre se manifesta como uma pasta nova
+            # vazia criada ao lado da pasta real, que já tem os arquivos —
+            # prefere quem tem mais conteúdo em vez de mtime (não confiável;
+            # uma limpeza ou sincronização pode "tocar" a pasta errada) ou
+            # ordem alfabética (arbitrário).
+            return max(matches, key=lambda e: sum(1 for f in e.rglob("*") if f.is_file()))
+
+        found = _scan()
+        if found is not None:
+            return found
+
+        # Nada encontrado de primeira: pode ser um soluço passageiro de
+        # sincronização (ex: OneDrive listando a pasta com atraso) em vez da
+        # pasta realmente não existir — tenta mais duas vezes antes de deixar
+        # o chamador criar uma pasta nova (o que gera duplicata órfã).
+        for _ in range(2):
+            time.sleep(0.3)
+            found = _scan()
+            if found is not None:
+                return found
         return None
 
     def rename_demand_folder(self, demand_id: int, new_title: str) -> Optional[Path]:
