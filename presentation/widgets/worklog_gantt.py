@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QDialog, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QLabel,
 )
 from PyQt6.QtCore import Qt, QRect, QTimer, pyqtSignal, QSize
-from PyQt6.QtGui import QPainter, QColor, QFont, QPen
+from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QFontMetrics
 
 # ── Paleta de cores das demandas ──────────────────────────────────────────────
 _PALETTE = [
@@ -26,11 +26,16 @@ _PALETTE = [
 _DOW_PT = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
 
 # ── Constantes de layout (compartilhadas pelos dois painéis) ──────────────────
-LABEL_W   = 210
-ROW_H     = 34
+LABEL_W   = 280
+ROW_H     = 48
 HDR_DATE  = 28   # altura da linha de datas
 HDR_HOUR  = 28   # altura da linha de horários
 HEADER_H  = HDR_DATE + HDR_HOUR
+# Altura mínima do conteúdo (cabeçalho + pelo menos 1 linha) — usada nos três
+# painéis (label, timeline e widget externo) pra ficarem sempre consistentes.
+# Sem isso, com 0 demandas o painel externo ficava mais baixo do que a altura
+# mínima da timeline rolável, sobrando uma barra de rolagem vertical vazia.
+_MIN_CONTENT_H = HEADER_H + ROW_H
 
 # Janela horária visível no eixo X
 _H_START  = 6
@@ -68,6 +73,36 @@ def _fmt_duration_min(minutes: int) -> str:
     minutes = max(0, minutes)
     h, m = minutes // 60, minutes % 60
     return f"{h}h{m:02d}min" if h else f"{m}min"
+
+
+def _wrap_two_lines(text: str, fm: QFontMetrics, max_width: int) -> str:
+    """Quebra `text` em até 2 linhas que cabem em `max_width`, elidindo a
+    segunda linha com "…" só se realmente sobrar texto — em vez de um corte
+    fixo por quantidade de caracteres, que desperdiça espaço em títulos
+    curtos e trunca cedo demais em títulos com palavras longas."""
+    words = text.split(" ")
+
+    def _fill_line(start: int) -> tuple:
+        line = ""
+        i = start
+        while i < len(words):
+            candidate = f"{line} {words[i]}".strip()
+            if not line or fm.horizontalAdvance(candidate) <= max_width:
+                line = candidate
+                i += 1
+            else:
+                break
+        return line, i
+
+    line1, i = _fill_line(0)
+    if i >= len(words):
+        return line1
+
+    line2, j = _fill_line(i)
+    if j < len(words):
+        rest = f"{line2} {' '.join(words[j:])}".strip()
+        line2 = fm.elidedText(rest, Qt.TextElideMode.ElideRight, max_width)
+    return f"{line1}\n{line2}"
 
 
 _GENERAL_KEY = object()   # sentinela para atividades avulsas (demand_id=None)
@@ -240,17 +275,27 @@ class _LabelPanel(QWidget):
         self._dark        = dark
 
         self.setFixedWidth(LABEL_W)
-        self.setFixedHeight(HEADER_H + len(demand_order) * ROW_H)
+        self.setFixedHeight(max(HEADER_H + len(demand_order) * ROW_H, _MIN_CONTENT_H))
         self.setMouseTracking(True)
 
         self._add_btn = QPushButton(self)
-        self._add_btn.setIcon(qta.icon("fa6s.plus", color="#F8FAFC"))
+        # Fica sobre o cabeçalho "Demanda" (c_hdr1): claro (#E2E8F0) no tema
+        # claro, escuro (#1E293B) no escuro — ícone/fundo precisam inverter
+        # junto, senão fica quase invisível num dos dois (branco sobre claro).
+        icon_color = "#F8FAFC" if dark else "#1E293B"
+        if dark:
+            btn_bg     = "rgba(255,255,255,30)"
+            btn_bg_hov = "rgba(255,255,255,60)"
+        else:
+            btn_bg     = "rgba(0,0,0,20)"
+            btn_bg_hov = "rgba(0,0,0,45)"
+        self._add_btn.setIcon(qta.icon("fa6s.plus", color=icon_color))
         self._add_btn.setFixedSize(20, 20)
         self._add_btn.setToolTip("Adicionar demanda ao gráfico")
         self._add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._add_btn.setStyleSheet(
-            "QPushButton { background: rgba(255,255,255,30); border: none; border-radius: 10px; }"
-            "QPushButton:hover { background: rgba(255,255,255,60); }"
+            f"QPushButton {{ background: {btn_bg}; border: none; border-radius: 10px; }}"
+            f"QPushButton:hover {{ background: {btn_bg_hov}; }}"
         )
         self._add_btn.move(LABEL_W - 28, 4)
         self._add_btn.clicked.connect(self._pick_demand)
@@ -314,12 +359,13 @@ class _LabelPanel(QWidget):
                 demand = self._demands_map.get(did)
                 label  = demand.title if demand else f"ID {did}"
             text_w = LABEL_W - (32 if is_empty else 14)
-            disp = label if len(label) <= 27 else label[:25] + "…"
+            disp = _wrap_two_lines(label, QFontMetrics(fn), text_w)
 
             painter.setPen(QColor(c_text))
             painter.setFont(fn)
             painter.drawText(QRect(10, y, text_w, ROW_H),
-                             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+                             | Qt.TextFlag.TextWordWrap,
                              disp)
 
             if is_empty:
@@ -407,7 +453,7 @@ class _TimelineCanvas(QWidget):
 
         self.setMinimumSize(
             self._n_days * self._day_w,
-            max(HEADER_H + len(demand_order) * ROW_H, 120),
+            max(HEADER_H + len(demand_order) * ROW_H, _MIN_CONTENT_H),
         )
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)   # necessário para o Esc cancelar o arraste
@@ -520,21 +566,33 @@ class _TimelineCanvas(QWidget):
         # ── Cabeçalho linha 2: Horários ───────────────────────────────────────
         painter.fillRect(0, HDR_DATE, self.width(), HDR_HOUR, QColor(c_hdr2))
 
+        # Posições x das linhas verticais (dia/hora), redesenhadas depois em
+        # cima do fundo listrado de cada linha — se desenhadas só aqui (altura
+        # cheia), o fillRect da listra das linhas pares (c_row_alt) as apaga.
+        grid_lines: list[tuple[int, str]] = []
+
         for i in range(self._n_days):
             dx = self._day_x(i)
 
-            # Linha separadora de dia (mais escura, vai do topo ao rodapé)
+            # Linha separadora de dia (mais escura, vai do topo ao cabeçalho)
             painter.setPen(QPen(QColor(c_line_d), 1))
-            painter.drawLine(dx, 0, dx, self.height())
+            painter.drawLine(dx, 0, dx, HEADER_H)
+            grid_lines.append((dx, c_line_d))
 
             # Marcadores de hora
+            day_end_x = dx + self._day_w
             for h in range(_H_START, _H_END + 1, self._hstep):
                 hx = dx + int((h - _H_START) * self._pph)
                 if h != _H_START:
                     painter.setPen(QPen(QColor(c_line_h), 1))
-                    painter.drawLine(hx, HDR_DATE, hx, self.height())
-                # Label — só desenha se tiver espaço suficiente
-                slot_px = self._pph * self._hstep
+                    painter.drawLine(hx, HDR_DATE, hx, HEADER_H)
+                    grid_lines.append((hx, c_line_h))
+                # Label — só desenha se tiver espaço suficiente. A última hora
+                # antes da virada do dia pode ter menos espaço até a borda do
+                # que um slot cheio (quando _hstep não divide _VISIBLE de forma
+                # exata) — sem limitar pela borda, o texto vaza pro dia seguinte
+                # e sobrepõe o rótulo de lá (ex: "22h" colidindo com "06h").
+                slot_px = min(self._pph * self._hstep, day_end_x - hx)
                 if slot_px >= 16:
                     painter.setPen(QColor(c_muted))
                     painter.setFont(fn_s)
@@ -547,7 +605,8 @@ class _TimelineCanvas(QWidget):
         # Borda direita + inferior do cabeçalho
         rx = self._n_days * self._day_w
         painter.setPen(QPen(QColor(c_line_d), 1))
-        painter.drawLine(rx, 0, rx, self.height())
+        painter.drawLine(rx, 0, rx, HEADER_H)
+        grid_lines.append((rx, c_line_d))
         painter.drawLine(0, HEADER_H, self.width(), HEADER_H)
 
         # ── Demandas ──────────────────────────────────────────────────────────
@@ -572,6 +631,12 @@ class _TimelineCanvas(QWidget):
                 ti = (today - self._date_from).days
                 painter.fillRect(self._day_x(ti), y, self._day_w, ROW_H,
                                  QColor(37, 99, 235, 14))
+
+            # Redesenha as linhas verticais de dia/hora por cima do fundo da
+            # linha (senão ficam invisíveis nas linhas pares/listradas).
+            for gx, gcol in grid_lines:
+                painter.setPen(QPen(QColor(gcol), 1))
+                painter.drawLine(gx, y, gx, y + ROW_H)
 
             # Linha horizontal
             painter.setPen(QPen(QColor(c_line_h), 1))
@@ -812,8 +877,13 @@ class WorklogGanttWidget(QWidget):
             self._lscroll.verticalScrollBar().setValue
         )
 
-        # Altura exata conforme o número de demandas (scroll vertical ativa quando necessário)
-        self.setFixedHeight(min(HEADER_H + len(order) * ROW_H + 22, 460))
+        # Altura exata conforme o número de demandas (scroll vertical ativa quando
+        # necessário). Teto proporcional ao ROW_H atual — o valor antigo (460) foi
+        # calibrado pra linhas de 1 linha só (34px) e ficou baixo demais depois que
+        # as linhas passaram a ter 2 linhas de título (48px).
+        max_height = int(460 * ROW_H / 34)
+        content_h = max(HEADER_H + len(order) * ROW_H, _MIN_CONTENT_H)
+        self.setFixedHeight(min(content_h + 22, max_height))
 
         # Posiciona no dia mais recente ao abrir
         QTimer.singleShot(0, lambda: self._tscroll.horizontalScrollBar().setValue(
