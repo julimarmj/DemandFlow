@@ -227,16 +227,27 @@ class DemandFileService:
             return old
 
     # ── Roteamento automático ─────────────────────────────────────────────────
+
+    # Prefixo comum a todo código documental: 1 letra + 4 dígitos (ex.: "B4130").
+    # O código de 2 caracteres (DOCUMENT_CODE_MAP) que vem depois às vezes cola
+    # direto nesse prefixo (ex.: "K1234DF0001") e às vezes tem 1 letra de
+    # disciplina no meio (ex.: "B4130JX00063" — "J" de disciplina, "X0" é o
+    # código real) — tenta os dois deslocamentos em vez de presumir um só.
+    _DOC_PREFIX_RE = re.compile(r'[A-Z]\d{4}')
+
     def _get_document_category(self, filename: str):
         name = Path(filename).stem.upper()
 
-        matches = re.findall(r'[A-Z]\d{4}([A-Z][A-Z0-9]{2})\d+', name)
-
-        for match in matches:
-            code = match[1:]
-
-            if code in self.DOCUMENT_CODE_MAP:
-                return self.DOCUMENT_CODE_MAP[code]
+        for pm in self._DOC_PREFIX_RE.finditer(name):
+            tail = name[pm.end():]
+            for offset in (0, 1):
+                if offset == 1 and not (tail and tail[0].isalpha()):
+                    continue   # só pula 1 caractere se for mesmo uma letra (disciplina)
+                code = tail[offset:offset + 2]
+                rest = tail[offset + 2:offset + 3]
+                if len(code) == 2 and code[0].isalpha() and rest.isdigit():
+                    if code in self.DOCUMENT_CODE_MAP:
+                        return self.DOCUMENT_CODE_MAP[code]
         return None
 
     def _get_target_subfolder(self, src: Path) -> str:
