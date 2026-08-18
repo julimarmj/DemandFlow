@@ -16,10 +16,14 @@ from PyQt6.QtWidgets import (
     QWidget, QRubberBand,
 )
 from PyQt6.QtGui import (
-    QSyntaxHighlighter, QTextCharFormat, QColor, QTextCursor, QImage,
-    QDesktopServices, QCursor, QPainter, QPen,
+    QSyntaxHighlighter, QTextCharFormat, QColor, QTextCursor, QImage, QPixmap,
+    QDesktopServices, QCursor, QPainter, QPen, QTextObjectInterface, QTextFormat,
+    QTextDocument,
 )
-from PyQt6.QtCore import Qt, QTimer, QPoint, QRect, QThread, pyqtSignal, QBuffer, QIODevice, QUrl
+from PyQt6.QtCore import (
+    Qt, QTimer, QPoint, QRect, QThread, pyqtSignal, QBuffer, QIODevice, QUrl,
+    QObject, QSizeF, QRectF,
+)
 
 # ── Dicionários ───────────────────────────────────────────────────────────────
 # Carregados em thread daemon para não atrasar a inicialização da UI.
@@ -99,15 +103,51 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
+# Letras acentuadas/cedilha do português — usadas pra ponderar o custo de
+# inserção na distância de edição abaixo (ver _weighted_edit_distance).
+_ACCENTED = set("áàâãéêíóôõúüçÁÀÂÃÉÊÍÓÔÕÚÜÇ")
+
+
+def _weighted_edit_distance(a: str, b: str) -> float:
+    """Como _levenshtein, mas com custos diferentes por tipo de edição —
+    reflete os erros de digitação mais comuns em português, onde esquecer um
+    acento/cedilha é muito mais frequente que trocar uma letra por outra no
+    meio da palavra:
+      • inserir letra acentuada (ex.: "funao"→"função", faltou o "ç"): 0.5
+      • inserir letra comum:                                          1.0
+      • remover uma letra (o candidato é mais curto que a palavra):   1.5
+      • substituir uma letra por outra:                               2.0
+    Só usada para ORDENAR candidatos já aceitos pelo corte de _levenshtein
+    em _rank_suggestions — não substitui o filtro de distância máxima."""
+    n, m = len(a), len(b)
+    dp = [[0.0] * (m + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        dp[i][0] = dp[i - 1][0] + 1.5
+    for j in range(1, m + 1):
+        dp[0][j] = dp[0][j - 1] + (0.5 if b[j - 1] in _ACCENTED else 1.0)
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            ins_cost = 0.5 if b[j - 1] in _ACCENTED else 1.0
+            sub_cost = 0.0 if a[i - 1] == b[j - 1] else 2.0
+            dp[i][j] = min(
+                dp[i - 1][j] + 1.5,
+                dp[i][j - 1] + ins_cost,
+                dp[i - 1][j - 1] + sub_cost,
+            )
+    return dp[n][m]
+
+
 def _rank_suggestions(word: str, candidates: list[str]) -> list[str]:
-    """Reordena por distância de edição real e descarta as muito distantes —
-    o ranking interno do hunspell às vezes deixa palavras "nada a ver" no topo
-    (compartilham letras, mas não são parecidas o suficiente pra fazer sentido)."""
+    """Descarta candidatos muito distantes pela distância de edição real (o
+    ranking interno do hunspell às vezes deixa palavras "nada a ver" no topo —
+    compartilham letras, mas não são parecidas o suficiente pra fazer sentido)
+    e ordena os que sobraram pela distância PONDERADA, que prioriza correções
+    plausíveis (esquecer acento/cedilha) sobre trocas de letra arbitrárias."""
     w = word.lower()
     max_dist = max(2, len(w) // 4)
     scored = [(c, _levenshtein(w, c.lower())) for c in candidates]
     scored = [(c, d) for c, d in scored if d <= max_dist]
-    scored.sort(key=lambda t: t[1])
+    scored.sort(key=lambda t: _weighted_edit_distance(w, t[0].lower()))
     return [c for c, _ in scored[:6]]
 
 
@@ -320,6 +360,39 @@ class _ImageSelector:
             h.hide()
 
 
+# ── Renderização de imagem com interpolação suave ───────────────────────────
+# Por padrão o Qt desenha imagens embutidas no QTextDocument sem interpolação
+# suave — em qualquer tamanho que não seja exatamente a resolução nativa do
+# recurso (o que na prática quase nunca acontece ao redimensionar arrastando
+# o mouse), o resultado sai serrilhado/com moiré. O redimensionamento em si
+# NUNCA altera os pixels originais (só o width/height de exibição), então
+# registrar esse handler no lugar do padrão do Qt é suficiente pra imagem
+# ficar nítida em qualquer tamanho, incluindo de volta ao "como era antes".
+
+class _SmoothImageHandler(QObject, QTextObjectInterface):
+    def intrinsicSize(self, doc, pos_in_document, fmt):
+        img_fmt = fmt.toImageFormat()
+        if img_fmt.width() > 0 and img_fmt.height() > 0:
+            return QSizeF(img_fmt.width(), img_fmt.height())
+        return QSizeF(0, 0)
+
+    def drawObject(self, painter, rect, doc, pos_in_document, fmt):
+        img_fmt = fmt.toImageFormat()
+        res = doc.resource(QTextDocument.ResourceType.ImageResource, QUrl(img_fmt.name()))
+        if isinstance(res, QImage):
+            pix = QPixmap.fromImage(res)
+        elif isinstance(res, QPixmap):
+            pix = res
+        else:
+            return
+        if pix.isNull():
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.drawPixmap(rect, pix, QRectF(pix.rect()))
+        painter.restore()
+
+
 # ── SpellCheckTextEdit ────────────────────────────────────────────────────────
 
 # Teto de resolução para imagens inseridas/coladas — evita que screenshots em
@@ -386,6 +459,14 @@ class SpellCheckTextEdit(QTextEdit):
         self.setMouseTracking(True)
         self._init_image_selection()
 
+        # Registra o handler de imagem com interpolação suave (ver
+        # _SmoothImageHandler acima) — sem isso o Qt desenha imagens
+        # embutidas serrilhadas em qualquer tamanho fora da resolução nativa.
+        self._image_handler = _SmoothImageHandler()
+        self.document().documentLayout().registerHandler(
+            QTextFormat.ObjectTypes.ImageObject.value, self._image_handler
+        )
+
     def text(self) -> str:
         """Alias para toPlainText() — torna SpellCheckTextEdit drop-in de QLineEdit."""
         return self.toPlainText()
@@ -438,6 +519,16 @@ class SpellCheckTextEdit(QTextEdit):
             QDesktopServices.openUrl(url)
 
     def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            # Sem isso, o Esc não tratado sobe pro diálogo pai (ex.: detalhes
+            # da demanda) e fecha ele inteiro — só porque o cursor estava
+            # neste campo de nota. Consome aqui: desseleciona a imagem se
+            # houver uma selecionada, senão não faz nada (mas não deixa
+            # propagar).
+            if self._sel_img_pos >= 0:
+                self._deselect_image()
+            event.accept()
+            return
         if event.key() == Qt.Key.Key_Control:
             self._update_link_cursor(self.viewport().mapFromGlobal(QCursor.pos()))
         # Ao digitar após (ou dentro de) um hyperlink, reseta o formato do
@@ -649,24 +740,30 @@ class SpellCheckTextEdit(QTextEdit):
         self._refresh_handles()
 
     def _img_pos_at(self, viewport_pos: QPoint) -> int:
+        # charFormat() de um QTextCursor reflete o caractere ANTES da posição
+        # do cursor, não a posição em si — testar isImageFormat() direto em
+        # `pos` checava na verdade o caractere seguinte à imagem. Isso fazia
+        # cliques no texto logo depois de uma imagem serem confundidos com um
+        # clique na imagem (e, de quebra, a imagem em si só era encontrada
+        # por acidente quando havia texto depois dela).
         cc = self.document().characterCount()
-        cursor = self.cursorForPosition(viewport_pos)
-        for delta in (0, -1, -2):
-            pos = cursor.position() + delta
-            if pos < 0 or pos >= cc or pos + 1 >= cc:
+        base = self.cursorForPosition(viewport_pos).position()
+        for delta in (-1, 0, 1, -2, 2):
+            img_pos = base + delta
+            if img_pos < 0 or img_pos + 1 >= cc:
                 continue
             c = QTextCursor(self.document())
-            c.setPosition(pos)
+            c.setPosition(img_pos + 1)
             if not c.charFormat().isImageFormat():
                 continue
-            c2 = QTextCursor(self.document())
-            c2.setPosition(pos + 1)
-            rb = self.cursorRect(c)
-            ra = self.cursorRect(c2)
+            cb = QTextCursor(self.document()); cb.setPosition(img_pos)
+            ca = QTextCursor(self.document()); ca.setPosition(img_pos + 1)
+            rb = self.cursorRect(cb)
+            ra = self.cursorRect(ca)
             img_rect = QRect(rb.left(), rb.top(),
-                             ra.left() - rb.left(), rb.height())
-            if img_rect.contains(viewport_pos) or viewport_pos.x() <= img_rect.right() + 16:
-                return pos
+                             max(1, ra.left() - rb.left()), rb.height())
+            if img_rect.adjusted(-2, -2, 2, 2).contains(viewport_pos):
+                return img_pos
         return -1
 
     def _select_image(self, pos: int):
@@ -710,6 +807,33 @@ class SpellCheckTextEdit(QTextEdit):
                 self._select_image(pos)
             else:
                 self._deselect_image()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = self._img_pos_at(event.pos())
+            if pos >= 0:
+                self._restore_image_native_size(pos)
+                return
+        super().mouseDoubleClickEvent(event)
+
+    def _restore_image_native_size(self, pos: int):
+        """Devolve a imagem ao tamanho nativo do recurso (resolução real dos
+        pixels, não o que estava sendo exibido) — arrastar pela alça raramente
+        cai de volta exatamente no tamanho original, e mesmo poucos pixels de
+        diferença já deixam a imagem visivelmente serrilhada."""
+        c = QTextCursor(self.document())
+        c.setPosition(pos)
+        img_fmt = c.charFormat().toImageFormat()
+        res = self.document().resource(QTextDocument.ResourceType.ImageResource, QUrl(img_fmt.name()))
+        if res is None or res.isNull():
+            return
+        img_fmt.setWidth(res.width())
+        img_fmt.setHeight(res.height())
+        sel = QTextCursor(self.document())
+        sel.setPosition(pos)
+        sel.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.KeepAnchor)
+        sel.setCharFormat(img_fmt)
+        self._select_image(pos)
 
     def scrollContentsBy(self, dx: int, dy: int):
         super().scrollContentsBy(dx, dy)
@@ -782,6 +906,19 @@ class SpellCheckLineEdit(QLineEdit):
 
         self.setMouseTracking(True)
 
+        # Sublinhado ativa sozinho quando os dicionários terminam de carregar
+        # (mesmo padrão do SpellCheckTextEdit) — sem isso, um campo aberto
+        # antes do carregamento terminar nunca reavalia o texto já digitado.
+        self._ready_timer = QTimer(self)
+        self._ready_timer.setInterval(500)
+        self._ready_timer.timeout.connect(self._check_ready)
+        self._ready_timer.start()
+
+    def _check_ready(self):
+        if _dict_pt is not None:
+            self._ready_timer.stop()
+            self.update()
+
     def mouseMoveEvent(self, event):
         self._hover_local_pos = event.pos()
         self._hover_timer.start()
@@ -834,3 +971,57 @@ class SpellCheckLineEdit(QLineEdit):
             self.setText(text[:w_start] + replacement + text[w_end:])
             self.setCursorPosition(w_start + len(replacement))
             self._hover_word_range = None
+
+    # ── Sublinhado ────────────────────────────────────────────────────────────
+    # QLineEdit não tem suporte nativo a formatação por trecho (isso é um
+    # recurso de QTextDocument/QSyntaxHighlighter, usado no SpellCheckTextEdit)
+    # — desenha o sublinhado ondulado manualmente por cima do texto já
+    # renderizado pelo Qt.
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if _dict_pt is None:
+            return
+        text = self.text()
+        if not text:
+            return
+        wrong_ranges = [
+            (m.start(), m.end())
+            for m in _WORD_RE.finditer(text)
+            if _is_wrong(m.group())
+        ]
+        if not wrong_ranges:
+            return
+
+        fm = self.fontMetrics()
+        # Posição x (relativa ao widget) onde o caractere 0 do texto está
+        # desenhado — deriva do cursor atual em vez de presumir offset fixo,
+        # pra continuar correto mesmo quando o texto não cabe no campo e o
+        # QLineEdit rola internamente.
+        cur_rect = self.cursorRect()
+        base_x = cur_rect.left() - fm.horizontalAdvance(text[:self.cursorPosition()])
+        y = cur_rect.bottom() - 1
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor("#EF4444"))
+        pen.setWidthF(1.2)
+        painter.setPen(pen)
+        for start, end in wrong_ranges:
+            x1 = base_x + fm.horizontalAdvance(text[:start])
+            x2 = base_x + fm.horizontalAdvance(text[:end])
+            self._draw_squiggle(painter, x1, x2, y)
+        painter.end()
+
+    @staticmethod
+    def _draw_squiggle(painter: QPainter, x1: float, x2: float, y: float):
+        step, amp = 3, 1.5
+        pts = []
+        x, up = x1, True
+        while x < x2:
+            pts.append(QPoint(int(x), int(y - (amp if up else 0))))
+            up = not up
+            x += step
+        pts.append(QPoint(int(x2), int(y - (amp if up else 0))))
+        for i in range(len(pts) - 1):
+            painter.drawLine(pts[i], pts[i + 1])
