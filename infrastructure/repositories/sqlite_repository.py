@@ -303,9 +303,11 @@ class SQLiteDemandRepository(DemandRepository):
         result = []
         q = query.lower().strip()
         # Tolerância a erro de digitação só entra como fallback pra buscas de
-        # 3+ caracteres — abaixo disso a correspondência aproximada vira ruído
-        # (quase tudo "parece" parecido com 1-2 letras).
-        allow_fuzzy = len(q) >= 3
+        # 6+ caracteres. Com max_dist=1 fixo, abaixo disso 1 edição já é uma
+        # fração grande demais da palavra — ex.: "rte" (3 letras) batia com
+        # "refinos", "resfriador", "remota", "tendencias" só por compartilhar
+        # um prefixo de 2 letras, sem relação nenhuma com o que foi digitado.
+        allow_fuzzy = len(q) >= 6
         for d in all_d:
             if q:
                 fields = [d.title, d.description, d.client, d.responsible, *d.tags]

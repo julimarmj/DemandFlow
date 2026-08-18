@@ -9,19 +9,23 @@ import re
 WORD_RE = re.compile(r"\w+", re.UNICODE)
 
 
-def fuzzy_prefix_distance(query: str, word: str, max_dist: int) -> int:
+def fuzzy_prefix_match(query: str, word: str, max_dist: int) -> tuple[int, int]:
     """Menor distância de edição entre `query` (usada inteira) e ALGUM
     prefixo de `word` — o resto de `word` pode sobrar (sufixo livre). É isso
     que permite "asst" achar "asset" (1 inserção) e "asss" achar "asset"
-    (1 substituição), sem exigir que a palavra inteira bata."""
+    (1 substituição), sem exigir que a palavra inteira bata.
+    Retorna (distância, tamanho do prefixo de `word` que alcançou essa
+    distância) — o tamanho é usado pra destacar só o trecho que realmente
+    correspondeu à busca, em vez da palavra inteira."""
     n = len(query)
     if n == 0:
-        return 0
+        return 0, 0
     m = len(word)
     if m == 0:
-        return n
+        return n, 0
     prev = list(range(n + 1))   # dp[0][i] = i (apagar i chars de query pra alinhar com prefixo vazio de word)
     best = prev[n]
+    best_len = 0
     for j in range(1, m + 1):
         wc = word[j - 1]
         cur = [j] + [0] * n
@@ -35,7 +39,14 @@ def fuzzy_prefix_distance(query: str, word: str, max_dist: int) -> int:
         prev = cur
         if cur[n] < best:
             best = cur[n]
-    return best
+            best_len = j
+    return best, best_len
+
+
+def fuzzy_prefix_distance(query: str, word: str, max_dist: int) -> int:
+    """Só a distância de fuzzy_prefix_match — mantido separado porque é o
+    caso de uso mais comum (filtro de busca, que só precisa do número)."""
+    return fuzzy_prefix_match(query, word, max_dist)[0]
 
 
 def fuzzy_word_match(query: str, text: str, max_dist: int) -> bool:
@@ -51,16 +62,20 @@ def fuzzy_word_match(query: str, text: str, max_dist: int) -> bool:
     return False
 
 
-def find_fuzzy_word(query: str, text: str, max_dist: int):
-    """Como `fuzzy_word_match`, mas retorna o `re.Match` da PRIMEIRA palavra
-    que bateu (ou None) — usado pra destacar a palavra inteira na UI quando
-    não há correspondência exata."""
+def find_fuzzy_match_span(query: str, text: str, max_dist: int):
+    """Como `find_fuzzy_word`, mas em vez do `re.Match` da palavra inteira
+    retorna (match, tamanho_do_trecho) — o trecho é só a parte do começo da
+    palavra que efetivamente correspondeu à busca (ex.: buscar "cronogrma"
+    e achar "cronograma" destaca só "cronogram", não a palavra toda), pra
+    deixar claro pro usuário POR QUE aquilo bateu."""
     if not query or not text:
         return None
+    q = query.lower()
     for m in WORD_RE.finditer(text):
         w = m.group(0).lower()
         if len(w) < len(query) - max_dist:
             continue
-        if fuzzy_prefix_distance(query.lower(), w, max_dist) <= max_dist:
-            return m
+        dist, span_len = fuzzy_prefix_match(q, w, max_dist)
+        if dist <= max_dist:
+            return m, span_len
     return None
