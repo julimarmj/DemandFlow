@@ -350,13 +350,23 @@ class DemandUseCases:
         self.shift_dependent_milestones(all_milestones, milestone.id, new_deadline)
 
         # A Conclusão representa o prazo final da demanda — mantém sincronizado.
+        # Cobre tanto o caso de editar a Conclusão diretamente quanto o de
+        # editar um milestone anterior (ex.: Desenvolvimento) que a empurra
+        # em cascata via shift_dependent_milestones — nos dois casos a data
+        # de Conclusão muda e a demanda precisa acompanhar.
         # Registrado numa ÚNICA entrada de histórico junto com a mudança do
         # milestone (não duas), já que pro usuário é uma ação só.
-        demand_synced = False
         if _is_conclusion_milestone(milestone):
+            conclusion_deadline = new_deadline
+        else:
+            conclusion = next((m for m in all_milestones if _is_conclusion_milestone(m)), None)
+            conclusion_deadline = conclusion.deadline if conclusion else None
+
+        demand_synced = False
+        if conclusion_deadline is not None:
             demand = self._repo.get_by_id(milestone.demand_id)
-            if demand is not None and demand.deadline != new_deadline:
-                demand.deadline = new_deadline
+            if demand is not None and demand.deadline != conclusion_deadline:
+                demand.deadline = conclusion_deadline
                 self._repo.save(demand)
                 demand_synced = True
 
@@ -366,7 +376,7 @@ class DemandUseCases:
             f"para {new_deadline:%d/%m/%Y}"
         )
         if demand_synced:
-            action += " (prazo da demanda atualizado junto, por ser o milestone de Conclusão)"
+            action += " (prazo da demanda atualizado junto, pois a data de Conclusão também mudou)"
 
         self._repo.add_history(HistoryEntry(
             id=0, demand_id=milestone.demand_id, action=action, user=user,
