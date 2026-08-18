@@ -94,7 +94,7 @@ class CommentType(str, Enum):
 CATEGORIES = [
     "Desenvolvimento", "Automação Industrial", "Gestão de Projetos",
     "Infraestrutura", "Engenharia", "Suporte", "Documentação",
-    "Reunião", "Análise", "Outro"
+    "Reunião", "Participante", "Análise", "Outro"
 ]
 
 
