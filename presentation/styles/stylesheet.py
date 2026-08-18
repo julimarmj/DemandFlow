@@ -239,7 +239,10 @@ def get_stylesheet(dark: bool = False) -> str:
         background-color: {C['accent']};
         border: none;
         color: #FFFFFF;
-        padding: 4px 12px;
+        /* padding 1px maior que o QPushButton base pra compensar a borda de
+           1px que ele não tem — sem isso, o botão primário (Salvar/Registrar)
+           fica visivelmente menor que o botão ao lado (Cancelar). */
+        padding: 9px 17px;
     }}
     QPushButton#btn_primary:hover {{ background-color: {C['accent_hover']}; }}
 
