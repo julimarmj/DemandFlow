@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QDialog, QTabWidget, QCalendarWidget, QMessageBox,
 )
 from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal, QDate, QSettings
-from PyQt6.QtGui import QBrush, QColor, QFont, QIcon, QTextCharFormat, QPainter, QPen, QCursor
+from PyQt6.QtGui import QBrush, QColor, QFont, QIcon, QTextCharFormat, QPainter, QPen, QCursor, QPalette
 
 from core.domain.entities import (
     Demand, Status, Priority, CATEGORIES, CommentType
@@ -645,7 +645,13 @@ class MainWindow(QMainWindow):
 
         # Pills para demandas abertas (alinhadas à base, estilo aba)
         pills_container = QWidget()
-        pills_container.setStyleSheet("background: transparent;")
+        # WA_NoSystemBackground em vez de QSS "background: transparent" — com
+        # Fusion + stylesheet de app, um ancestral com fundo transparente via
+        # QSS faz qualquer tooltip de um descendente (ex.: as pills) renderizar
+        # preta, ignorando a paleta/QSS de QToolTip. Este atributo consegue o
+        # mesmo efeito visual (deixa o fundo do pai aparecer) sem QSS.
+        pills_container.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        pills_container.setAutoFillBackground(False)
         pills_container.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Maximum)
         self._demand_pills_layout = QHBoxLayout(pills_container)
         self._demand_pills_layout.setContentsMargins(0, 0, 0, 0)
@@ -1062,9 +1068,11 @@ class MainWindow(QMainWindow):
             #responsible = resp_text,
         )
 
-        # Concluídas vivem na Base de Conhecimento; só mostra aqui se filtro explícito
+        # Concluídas (vivem na Base de Conhecimento) e Canceladas não aparecem
+        # aqui por padrão — só mostram se o filtro de status for selecionado
+        # explicitamente pra uma delas.
         if not isinstance(status_data, Status):
-            demands = [d for d in demands if d.status != Status.CONCLUIDA]
+            demands = [d for d in demands if d.status not in (Status.CONCLUIDA, Status.CANCELADA)]
 
         demands = sorted(
             demands,
@@ -2112,7 +2120,7 @@ class MainWindow(QMainWindow):
         if q:
             # Tolerância a erro de digitação só como fallback (busca exata
             # primeiro, mesma lógica/limites da busca de Demandas).
-            allow_fuzzy = len(q) >= 3
+            allow_fuzzy = len(q) >= 6
 
             def _matches(d):
                 fields = [d.title, d.description, d.notes or "", *d.tags]
@@ -2691,12 +2699,27 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 pass
         self._refresh_view()
+        self._refresh_demand_pills_theme()
         # Reconstrói sempre Horas e Planejamento — independente da aba ativa,
         # pois são widgets QPainter com cores hardcoded que precisam ser recriados.
         if self._current_view != "reports":
             self._refresh_reports()
         if self._current_view != "planning":
             self._refresh_planning()
+
+    def _refresh_demand_pills_theme(self):
+        """As pills de demandas minimizadas (barra de abas com nome+X) têm a
+        cor calculada uma vez, na criação — ao trocar de tema, precisam ser
+        recriadas, senão ficam com as cores do tema anterior indefinidamente."""
+        for demand_id in list(self._demand_pills.keys()):
+            frame = self._detail_windows.get(demand_id)
+            if not frame:
+                continue
+            title = frame._title
+            pill = self._demand_pills.pop(demand_id)
+            pill.setParent(None)
+            pill.deleteLater()
+            self._add_demand_pill(demand_id, title)
 
     def _refresh_icons(self):
         c = "#94A3B8" if self._dark else "#64748B"
@@ -2719,7 +2742,22 @@ class MainWindow(QMainWindow):
             btn.setIcon(qta.icon(self._nav_icon_names[key], color=color))
 
     def _apply_theme(self):
-        QApplication.instance().setStyleSheet(get_stylesheet(self._dark))
+        app = QApplication.instance()
+        app.setStyleSheet(get_stylesheet(self._dark))
+
+        # O QSS de QToolTip acima nem sempre é respeitado — em alguns
+        # ambientes Windows a tooltip nativa ignora o stylesheet e cai no
+        # visual padrão (fundo preto), destoando do tema claro/escuro do
+        # app. Define a paleta também, que é o caminho mais confiável pro
+        # Qt pintar a tooltip corretamente em qualquer plataforma.
+        palette = app.palette()
+        if self._dark:
+            palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#1E293B"))
+            palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#E2E8F0"))
+        else:
+            palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#FFFFFF"))
+            palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#1E293B"))
+        app.setPalette(palette)
 
     # ── Auto-update ────────────────────────────────────────────────────────────
 
