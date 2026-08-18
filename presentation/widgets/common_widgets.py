@@ -10,11 +10,15 @@ from PyQt6.QtWidgets import (
     QProgressBar, QScrollArea, QWidget, QLabel, QFrame, QHBoxLayout, QVBoxLayout,
     QPushButton, QSizePolicy, QGraphicsDropShadowEffect, QLineEdit, QApplication
 )
-from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal, QPoint
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QTextCursor, QTextCharFormat, QBitmap
+from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal, QPoint, QUrl
+from PyQt6.QtGui import (
+    QColor, QFont, QPainter, QPen, QBrush, QTextCursor, QTextCharFormat, QBitmap,
+    QDesktopServices,
+)
 
 from core.domain.entities import Demand, Status, Priority
-from core.domain.text_match import find_fuzzy_word
+from core.domain.text_match import find_fuzzy_match_span
+from core.servicenow import extract_number as _servicenow_number, demand_url as _servicenow_url
 from presentation.widgets.spell_check import SpellCheckTextEdit
 
 
@@ -28,8 +32,9 @@ def _plain_text(html: str) -> str:
 def _highlight_html(text: str, query: str, dark: bool) -> str:
     """Escapa `text` e destaca a parte que bateu com a busca: ocorrências
     exatas (case-insensitive) do texto digitado, ou — se não houver nenhuma —
-    a palavra inteira que bateu por correspondência aproximada (mesmo
-    critério tolerante a erro de digitação usado no filtro da lista)."""
+    só o trecho da palavra que bateu por correspondência aproximada (mesmo
+    critério tolerante a erro de digitação usado no filtro da lista), não a
+    palavra inteira — deixa claro qual pedaço realmente casou com a busca."""
     if not query:
         return text  # sem destaque: texto puro, QLabel renderiza sem escapar
 
@@ -50,11 +55,13 @@ def _highlight_html(text: str, query: str, dark: bool) -> str:
         out.append(_html.escape(text[last:]))
         return "".join(out)
 
-    if len(query) >= 3:
-        m = find_fuzzy_word(query, text, 1)
-        if m:
+    if len(query) >= 6:
+        found = find_fuzzy_match_span(query, text, 1)
+        if found:
+            m, span_len = found
+            end = m.start() + span_len
             return (
-                _html.escape(text[:m.start()]) + _wrap(m.group(0)) + _html.escape(text[m.end():])
+                _html.escape(text[:m.start()]) + _wrap(text[m.start():end]) + _html.escape(text[end:])
             )
 
     return text  # busca sem match: texto puro, evita exibir &quot; etc. literalmente
@@ -65,8 +72,8 @@ def highlight_matches_in_text_edit(text_edit, query: str, dark: bool):
     conteúdo (possivelmente HTML rico — negrito, links, imagens) carregado.
     Diferente de `_highlight_html`, opera no QTextDocument já parseado via
     QTextCursor — não mexe na string HTML, então nunca corrompe formatação
-    existente. Se não achar nenhuma ocorrência exata, tenta destacar a
-    palavra inteira que bate por correspondência aproximada."""
+    existente. Se não achar nenhuma ocorrência exata, tenta destacar só o
+    trecho que bate por correspondência aproximada (não a palavra inteira)."""
     if not query:
         return
     doc = text_edit.document()
@@ -83,12 +90,13 @@ def highlight_matches_in_text_edit(text_edit, query: str, dark: bool):
         cursor.mergeCharFormat(fmt)
         found_any = True
 
-    if not found_any and len(query) >= 3:
-        m = find_fuzzy_word(query, doc.toPlainText(), 1)
-        if m:
+    if not found_any and len(query) >= 6:
+        found = find_fuzzy_match_span(query, doc.toPlainText(), 1)
+        if found:
+            m, span_len = found
             hcursor = QTextCursor(doc)
             hcursor.setPosition(m.start())
-            hcursor.setPosition(m.end(), QTextCursor.MoveMode.KeepAnchor)
+            hcursor.setPosition(m.start() + span_len, QTextCursor.MoveMode.KeepAnchor)
             hcursor.mergeCharFormat(fmt)
 
 
@@ -285,6 +293,24 @@ class DemandListItem(QFrame):
             days = d.days_since_activity
             badges.addWidget(BadgeLabel(f"Inativa {days}d", "#FEF3C7", "#D97706"))
         badges.addStretch()
+
+        sn_number = _servicenow_number(d.title)
+        if sn_number:
+            sn_btn = QPushButton()
+            sn_btn.setIcon(qta.icon("fa6s.arrow-up-right-from-square",
+                                    color="#64748B" if self._dark else "#94A3B8"))
+            sn_btn.setIconSize(QSize(15, 15))
+            sn_btn.setFixedSize(26, 26)
+            sn_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            sn_btn.setToolTip(f"Abrir {sn_number} no ServiceNow")
+            sn_btn.setStyleSheet(f"""
+                QPushButton {{ border: none; border-radius: 4px; background: transparent; padding: 0; }}
+                QPushButton:hover {{ background: {'#334155' if self._dark else '#E2E8F0'}; }}
+            """)
+            sn_btn.clicked.connect(
+                lambda _, n=sn_number: QDesktopServices.openUrl(QUrl(_servicenow_url(n)))
+            )
+            badges.addWidget(sn_btn)
 
         root.addLayout(badges)
 
