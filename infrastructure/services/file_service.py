@@ -58,6 +58,51 @@ sh32.DragQueryFileW.argtypes = [
 ]
 sh32.DragQueryFileW.restype = wintypes.UINT
 
+# ── Exclusão via Shell (mesma API que o Explorer usa) ───────────────────────
+# Path.unlink()/os.remove() chamam DeleteFileW diretamente — o Explorer usa
+# IFileOperation/SHFileOperation, que passa pela Lixeira e tolera melhor
+# certas condições de compartilhamento/lock passageiro. Serve de fallback
+# quando o unlink direto (com retry) ainda assim dá Acesso Negado, mesmo o
+# arquivo não estando realmente bloqueado (o caso "Explorer consegue, o app
+# não consegue").
+
+class _SHFILEOPSTRUCTW(ctypes.Structure):
+    _fields_ = [
+        ("hwnd",   wintypes.HWND),
+        ("wFunc",  wintypes.UINT),
+        ("pFrom",  ctypes.c_wchar_p),
+        ("pTo",    ctypes.c_wchar_p),
+        ("fFlags", ctypes.c_uint16),
+        ("fAnyOperationsAborted", wintypes.BOOL),
+        ("hNameMappings", ctypes.c_void_p),
+        ("lpszProgressTitle", ctypes.c_wchar_p),
+    ]
+
+sh32.SHFileOperationW.argtypes = [ctypes.POINTER(_SHFILEOPSTRUCTW)]
+sh32.SHFileOperationW.restype = ctypes.c_int
+
+_FO_DELETE          = 0x0003
+_FOF_SILENT         = 0x0004
+_FOF_NOCONFIRMATION = 0x0010
+_FOF_ALLOWUNDO      = 0x0040   # manda pra Lixeira em vez de apagar direto
+_FOF_NOERRORUI      = 0x0400
+
+
+def _shell_delete_to_recycle_bin(path: str) -> bool:
+    """True se apagou com sucesso via Shell (Lixeira). False se a própria
+    API do Shell também recusou — aí o erro é mesmo real."""
+    # pFrom precisa ser terminado em \0\0 (lista de um único item).
+    buf = ctypes.create_unicode_buffer(path + "\0\0")
+    op = _SHFILEOPSTRUCTW()
+    op.hwnd = None
+    op.wFunc = _FO_DELETE
+    op.pFrom = ctypes.cast(buf, ctypes.c_wchar_p)
+    op.pTo = None
+    op.fFlags = _FOF_SILENT | _FOF_NOCONFIRMATION | _FOF_ALLOWUNDO | _FOF_NOERRORUI
+    result = sh32.SHFileOperationW(ctypes.byref(op))
+    return result == 0 and not op.fAnyOperationsAborted
+
+
 def _slugify(text: str, max_len: int = 60) -> str:
     text = text.strip()
     text = re.sub(r'[\\/:*?"<>|]', "", text)
@@ -326,30 +371,59 @@ class DemandFileService:
         p.rename(dest)
         return dest
 
+    @staticmethod
+    def _retry_on_lock(op, name: str, verb: str):
+        """Tenta `op()` algumas vezes antes de desistir — um WinError 5
+        (Acesso negado) em arquivo/pasta que o próprio usuário está mexendo
+        quase sempre é um lock passageiro (antivírus escaneando, indexador do
+        Windows, OneDrive sincronizando), não falta de permissão de verdade.
+        Se persistir depois das tentativas, troca a mensagem crua do Windows
+        por uma que diz o que fazer."""
+        last_err = None
+        for attempt in range(4):
+            try:
+                return op()
+            except PermissionError as e:
+                last_err = e
+                if attempt < 3:
+                    time.sleep(0.3 * (attempt + 1))
+        raise PermissionError(
+            f'Não foi possível {verb} "{name}" — o arquivo pode estar aberto em '
+            f"outro programa (leitor de PDF, Word, etc.) ou sendo usado por "
+            f"antivírus/sincronização. Feche-o e tente de novo."
+        ) from last_err
+
     def delete_item(self, path: str) -> None:
         p = Path(path)
         if not p.exists():
             return
-        if p.is_dir():
-            shutil.rmtree(str(p))
-        else:
-            p.unlink()
+        try:
+            self._retry_on_lock(
+                lambda: shutil.rmtree(str(p)) if p.is_dir() else p.unlink(),
+                p.name, "excluir",
+            )
+        except PermissionError:
+            # Fallback: mesma API do Shell que o Explorer usa pra deletar
+            # (manda pra Lixeira) — tolera uma condição de compartilhamento
+            # que a chamada direta (DeleteFileW, usada por Path.unlink) às
+            # vezes não tolera no mesmo arquivo.
+            if not _shell_delete_to_recycle_bin(str(p)):
+                raise
 
     def move_item(self, source: str, dest_dir: str) -> Path:
         """Move arquivo ou pasta para outro diretório (drag & drop interno)."""
         src = Path(source)
         dest = self._unique_dest(Path(dest_dir), src.name)
-        shutil.move(str(src), str(dest))
+        self._retry_on_lock(lambda: shutil.move(str(src), str(dest)), src.name, "mover")
         return dest
 
     def copy_item(self, source: str, dest_dir: str) -> Path:
         """Copia arquivo ou pasta para outro diretório."""
         src = Path(source)
         dest = self._unique_dest(Path(dest_dir), src.name, prefix="cópia de ")
-        if src.is_dir():
-            shutil.copytree(str(src), str(dest))
-        else:
-            shutil.copy2(str(src), str(dest))
+        op = (lambda: shutil.copytree(str(src), str(dest))) if src.is_dir() \
+            else (lambda: shutil.copy2(str(src), str(dest)))
+        self._retry_on_lock(op, src.name, "copiar")
         return dest
 
     # ── Clipboard — copia para área de transferência do SO ───────────────────
