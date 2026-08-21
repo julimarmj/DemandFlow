@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QDialog, QTabWidget, QCalendarWidget, QMessageBox,
 )
 from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal, QDate, QSettings
-from PyQt6.QtGui import QBrush, QColor, QFont, QIcon, QTextCharFormat, QPainter, QPen, QCursor, QPalette
+from PyQt6.QtGui import QBrush, QColor, QFont, QIcon, QTextCharFormat, QPainter, QPen, QCursor, QFontMetrics
 
 from core.domain.entities import (
     Demand, Status, Priority, CATEGORIES, CommentType
@@ -26,7 +26,7 @@ from presentation.widgets.common_widgets import (
     DemandPreviewPanel, MilestoneCalendarItem, ReminderCalendarItem, StatCard, MiniBarChart, DemandListItem, KanbanCard, BadgeLabel,
     status_badge, priority_badge, _highlight_html, highlight_matches_in_text_edit
 )
-from core.domain.text_match import fuzzy_word_match
+from core.domain.text_match import fuzzy_word_match, strip_accents
 from presentation.styles.stylesheet import get_stylesheet
 from presentation.dialogs.demand_form import DemandFormDialog
 from presentation.dialogs.demand_detail import DemandDetailDialog
@@ -880,11 +880,22 @@ class MainWindow(QMainWindow):
             row.setContentsMargins(4, 4, 4, 4)
             row.setSpacing(10)
             sb = status_badge(d.status)
-            name = QLabel(d.title[:52] + ("…" if len(d.title) > 52 else ""))
+            name = QLabel()
             name.setStyleSheet("font-size: 12px; background: transparent;")
+            name.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            # Elide pelo espaço em pixels realmente disponível, não por uma
+            # contagem fixa de caracteres — um corte fixo (ex.: 52 chars)
+            # tanto corta cedo demais pra fontes largas quanto desperdiça
+            # espaço sobrando pra fontes estreitas.
+            full_title = d.title
+            def _elide_name(event, lbl=name, text=full_title):
+                fm = QFontMetrics(lbl.font())
+                lbl.setText(fm.elidedText(text, Qt.TextElideMode.ElideRight, lbl.width()))
+                QLabel.resizeEvent(lbl, event)
+            name.resizeEvent = _elide_name
+            name.setToolTip(full_title)
             row.addWidget(sb)
-            row.addWidget(name)
-            row.addStretch()
+            row.addWidget(name, 1)
             item_frame.mouseDoubleClickEvent = lambda _, demand=d: self._open_demand_detail(demand)
             rec_l.addWidget(item_frame)
         rec_l.addStretch()
@@ -2122,9 +2133,11 @@ class MainWindow(QMainWindow):
             # primeiro, mesma lógica/limites da busca de Demandas).
             allow_fuzzy = len(q) >= 6
 
+            q_noaccent = strip_accents(q)
+
             def _matches(d):
                 fields = [d.title, d.description, d.notes or "", *d.tags]
-                if any(q in x.lower() for x in fields):
+                if any(q in x.lower() or q_noaccent in strip_accents(x.lower()) for x in fields):
                     return True
                 if allow_fuzzy:
                     return fuzzy_word_match(q, d.title, 1) or any(
@@ -2744,20 +2757,13 @@ class MainWindow(QMainWindow):
     def _apply_theme(self):
         app = QApplication.instance()
         app.setStyleSheet(get_stylesheet(self._dark))
-
-        # O QSS de QToolTip acima nem sempre é respeitado — em alguns
-        # ambientes Windows a tooltip nativa ignora o stylesheet e cai no
-        # visual padrão (fundo preto), destoando do tema claro/escuro do
-        # app. Define a paleta também, que é o caminho mais confiável pro
-        # Qt pintar a tooltip corretamente em qualquer plataforma.
-        palette = app.palette()
-        if self._dark:
-            palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#1E293B"))
-            palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#E2E8F0"))
-        else:
-            palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#FFFFFF"))
-            palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#1E293B"))
-        app.setPalette(palette)
+        # A tooltip preta (fundo transparente via QSS num widget ancestral
+        # quebrando a cor de tooltips descendentes) já foi corrigida na
+        # origem trocando por WA_NoSystemBackground (ver pills_container em
+        # _build_topbar) — setPalette() aqui foi removido porque, com o
+        # estilo nativo do Windows, uma paleta customizada faz o Qt abrir
+        # mão da pintura nativa de popups (ex.: dropdown de combobox perde
+        # cantos arredondados e cor de destaque, fica com visual genérico).
 
     # ── Auto-update ────────────────────────────────────────────────────────────
 
