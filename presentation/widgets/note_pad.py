@@ -13,9 +13,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import (
     QTextCharFormat, QTextListFormat, QColor, QFont, QTextCursor,
-    QPainter, QBitmap, QTextBlockFormat,
+    QPainter, QBitmap, QTextBlockFormat, QFontMetrics,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QEvent
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QEvent, QSize
 
 from presentation.widgets.spell_check import SpellCheckTextEdit
 
@@ -529,6 +529,35 @@ class _MatchMarks(QWidget):
         p.end()
 
 
+def _elide_two_lines(text: str, fm: QFontMetrics, max_width: int) -> str:
+    """Encaixa `text` em até 2 linhas (quando desenhado com word-wrap na
+    largura `max_width`), elidindo o final com "…" só se realmente sobrar
+    texto depois da 2ª linha — em vez de deixar crescer pra 3+ linhas."""
+    words = text.split(" ")
+
+    def _fill_line(start: int) -> tuple:
+        line = ""
+        i = start
+        while i < len(words):
+            candidate = f"{line} {words[i]}".strip()
+            if not line or fm.horizontalAdvance(candidate) <= max_width:
+                line = candidate
+                i += 1
+            else:
+                break
+        return line, i
+
+    line1, i = _fill_line(0)
+    if i >= len(words):
+        return line1
+
+    line2, j = _fill_line(i)
+    if j < len(words):
+        rest = f"{line2} {' '.join(words[j:])}".strip()
+        line2 = fm.elidedText(rest, Qt.TextElideMode.ElideRight, max_width)
+    return f"{line1}\n{line2}"
+
+
 # ── Painel TOC ───────────────────────────────────────────────────────────────
 
 class _TocPanel(QFrame):
@@ -594,6 +623,10 @@ class _TocPanel(QFrame):
         self._list = QListWidget()
         self._list.setFrameShape(QFrame.Shape.NoFrame)
         self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # A quebra em si é feita manualmente em _apply_filter (no máximo 2
+        # linhas, com "…" se ainda sobrar texto) — wordWrap fica desligado
+        # pra não quebrar de novo por cima e passar de 2 linhas.
+        self._list.setWordWrap(False)
         self._list.itemClicked.connect(
             lambda item: self.heading_clicked.emit(item.data(Qt.ItemDataRole.UserRole))
         )
@@ -633,13 +666,33 @@ class _TocPanel(QFrame):
         for state, text, pos in self._all_headings:
             if q and q not in text.lower():
                 continue
-            item = QListWidgetItem("  " * (state - 1) + text)
-            item.setData(Qt.ItemDataRole.UserRole, pos)
-            f = item.font()
+            full_text = "  " * (state - 1) + text
+            f = self._list.font()
             f.setBold(state == 1)
             f.setPointSize(11 if state <= 2 else 10)
-            item.setFont(f)
+            fm = QFontMetrics(f)
+            line_h = fm.lineSpacing()
+
+            # QListWidgetItem nativo não respeita bem quebra manual de linha
+            # (o Qt tenta elidir de novo por cima) — usa um QLabel como
+            # itemWidget, igual à lista de "Demandas Recentes" do dashboard,
+            # que re-elide pro tamanho real toda vez que é redimensionado.
+            lbl = QLabel(full_text)
+            lbl.setFont(f)
+            lbl.setWordWrap(True)
+            lbl.setFixedHeight(line_h * 2 + 4)
+
+            def _elide(event, w=lbl, t=full_text, metrics=fm):
+                avail = max(20, w.width() - 4)
+                w.setText(_elide_two_lines(t, metrics, avail))
+                QLabel.resizeEvent(w, event)
+            lbl.resizeEvent = _elide
+
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, pos)
+            item.setSizeHint(QSize(0, line_h * 2 + 8))
             self._list.addItem(item)
+            self._list.setItemWidget(item, lbl)
 
     def _on_search_changed(self, query: str):
         self._apply_filter(query)
