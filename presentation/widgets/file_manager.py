@@ -9,6 +9,7 @@ Melhorias:
 """
 import os
 import shutil
+import time
 import zipfile
 from pathlib import Path
 from typing import Optional
@@ -21,13 +22,43 @@ from PyQt6.QtWidgets import (
     QInputDialog, QFileDialog, QAbstractItemView, QApplication, QSizePolicy,
     QStyle, QFileIconProvider
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QUrl, QTimer, QFileInfo
+from PyQt6.QtCore import Qt, pyqtSignal, QUrl, QTimer, QFileInfo, QMimeData
 from PyQt6.QtGui import (
     QDragEnterEvent, QDropEvent, QDragMoveEvent, QColor,
-    QKeySequence, QShortcut, QBrush,
+    QKeySequence, QShortcut, QBrush, QDrag,
 )
 
 from infrastructure.services.file_service import DemandFileService
+
+
+class _DragOutTree(QTreeWidget):
+    """QTreeWidget que arrasta pra fora do app (Explorer, Teams, Outlook,
+    e-mail etc.), não só entre itens da própria árvore.
+
+    Por padrão, QTreeWidget.startDrag() só coloca no QMimeData o formato
+    interno do Qt ("application/x-qabstractitemmodeldatalist") — suficiente
+    pra mover itens dentro da própria árvore, mas invisível pra qualquer app
+    externo, que não entende esse formato e não reconhece nada pra soltar.
+    Sobrescrever com setUrls() gera o formato nativo do SO (CF_HDROP no
+    Windows) que Explorer/Teams/Outlook/etc. já sabem interpretar — e o
+    dropEvent() já trata soltar de volta na própria árvore via URLs também
+    (ver bloco "Drag externo" em dropEvent), então mover dentro da árvore
+    continua funcionando do mesmo jeito."""
+
+    def startDrag(self, supportedActions):
+        paths = []
+        for item in self.selectedItems():
+            node = item.data(0, Qt.ItemDataRole.UserRole)
+            if node and not node.get("is_root"):
+                paths.append(node["path"])
+        if not paths:
+            return
+
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(p) for p in paths])
+        drag.setMimeData(mime)
+        drag.exec(supportedActions)
 
 
 class FileManagerWidget(QWidget):
@@ -56,6 +87,12 @@ class FileManagerWidget(QWidget):
 
         # Item de destino do drag interno
         self._drag_target_item: Optional[QTreeWidgetItem] = None
+
+        # "Clique duplo lento" (clicar, soltar, esperar um instante, clicar
+        # de novo no mesmo item já selecionado) estilo Explorer pra renomear
+        # — diferente do duplo-clique rápido, que abre o item.
+        self._last_click_item = None
+        self._last_click_time = 0.0
 
         self.icon_provider = QFileIconProvider()
 
@@ -132,7 +169,7 @@ class FileManagerWidget(QWidget):
         root.addWidget(self._drop_hint)
 
         # ── Tree ──────────────────────────────────────────────────────────────
-        self.tree = QTreeWidget()
+        self.tree = _DragOutTree()
         self.tree.setHeaderLabels(["Nome", "Tamanho", "Modificado em"])
         self.tree.setColumnWidth(0, 340)
         self.tree.setColumnWidth(1, 80)
@@ -151,6 +188,7 @@ class FileManagerWidget(QWidget):
 
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
         self.tree.itemDoubleClicked.connect(self._on_double_click)
+        self.tree.itemClicked.connect(self._on_click_maybe_slow_dblclick)
         self.tree.setStyleSheet(self._tree_style())
         root.addWidget(self.tree)
 
@@ -417,13 +455,23 @@ class FileManagerWidget(QWidget):
         node = self._selected_node()
         if not node or node.get("is_root"):
             return
+        # Pra arquivo, só deixa editar o nome sem a extensão — ela é
+        # reanexada por baixo, então nem digitando outra extensão o usuário
+        # troca sem querer (ex.: renomear "relatorio.pdf" continua .pdf).
+        if node.get("is_dir"):
+            stem, ext = node["name"], ""
+        else:
+            p = Path(node["name"])
+            stem, ext = p.stem, p.suffix
+
+        label = f"Novo nome{f' (extensão {ext} mantida)' if ext else ''}:"
         name, ok = QInputDialog.getText(
-            self, "Renomear", "Novo nome:",
-            QLineEdit.EchoMode.Normal, node["name"]
+            self, "Renomear", label,
+            QLineEdit.EchoMode.Normal, stem
         )
         if ok and name.strip():
             try:
-                self._fs.rename_item(node["path"], name)
+                self._fs.rename_item(node["path"], name.strip() + ext)
                 self.refresh()
                 self.files_changed.emit()
             except Exception as e:
@@ -531,6 +579,24 @@ class FileManagerWidget(QWidget):
                 DemandFileService.open_file(node["path"])
             except Exception as e:
                 self._err(f"Não foi possível abrir:\n{e}")
+
+    # Janela de tempo entre os dois cliques pra contar como "duplo-clique
+    # lento" — abaixo disso é um duplo-clique normal (abre o item, tratado
+    # por _on_double_click); acima disso são dois cliques avulsos.
+    _SLOW_CLICK_MIN = 0.5
+    _SLOW_CLICK_MAX = 1.2
+
+    def _on_click_maybe_slow_dblclick(self, item: QTreeWidgetItem, col: int):
+        now = time.time()
+        same_item = item is self._last_click_item
+        elapsed = now - self._last_click_time
+        self._last_click_item = item
+        self._last_click_time = now
+        if same_item and self._SLOW_CLICK_MIN <= elapsed <= self._SLOW_CLICK_MAX:
+            node = item.data(0, Qt.ItemDataRole.UserRole)
+            if node and not node.get("is_root"):
+                self._last_click_item = None  # evita disparar de novo num 3º clique
+                self._action_rename()
 
     # ── Context Menu ──────────────────────────────────────────────────────────
     '''
@@ -965,9 +1031,15 @@ class FileManagerWidget(QWidget):
         # ── Drag interno (árvore usa formato próprio, sem URLs) ───────────────
         if event.mimeData().hasFormat("application/x-qabstractitemmodeldatalist") \
                 and not event.mimeData().hasUrls():
+            # Compara a pasta ATUAL do item (parent) com o destino, não o
+            # próprio caminho do item — comparar direto nunca dava igual pra
+            # um arquivo solto de volta na mesma pasta (caminho do arquivo
+            # != caminho da pasta), então ele era "movido" pra si mesmo e
+            # ganhava um "(1)" pra não colidir consigo próprio.
             internal = [
                 n["path"] for n in self._selected_nodes()
-                if n["path"] != target_dir and not n.get("is_root")
+                if not n.get("is_root")
+                and Path(n["path"]).parent != Path(target_dir)
             ]
             errors = []
             for src in internal:
@@ -995,8 +1067,17 @@ class FileManagerWidget(QWidget):
             event.ignore()
             return
 
-        external = [p for p in paths if not p.startswith(root)]
-        internal = [p for p in paths if p.startswith(root) and p != target_dir]
+        # Path(...), não startswith() de string crua: QUrl.toLocalFile() usa
+        # "/" mesmo no Windows, enquanto root/target_dir vêm com "\" — um
+        # startswith() nunca bate entre os dois formatos, então TODO arraste
+        # de dentro do próprio app caía como "externo" e passava pelo
+        # roteamento automático por extensão em vez de simplesmente mover
+        # pro destino exato — se a extensão coincidisse com a pasta atual,
+        # virava uma "colisão" consigo mesmo e ganhava um "(1)".
+        root_p = Path(root)
+        target_p = Path(target_dir)
+        external = [p for p in paths if not Path(p).is_relative_to(root_p)]
+        internal = [p for p in paths if Path(p).is_relative_to(root_p) and Path(p) != target_p]
 
         if external:
             self._move_files(external, target_dir)
@@ -1004,8 +1085,11 @@ class FileManagerWidget(QWidget):
         if internal:
             errors = []
             for src in internal:
-                if src == target_dir or Path(target_dir).is_relative_to(src):
+                src_p = Path(src)
+                if src_p == target_p or target_p.is_relative_to(src_p):
                     continue
+                if src_p.parent == target_p:
+                    continue  # já está na pasta de destino — soltar de volta é no-op
                 try:
                     self._fs.move_item(src, target_dir)
                 except Exception as e:
