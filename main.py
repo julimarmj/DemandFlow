@@ -24,11 +24,6 @@ def main():
     app = QApplication(sys.argv)
     app.setOrganizationName("DemandFlow")
     app.setApplicationName("App")
-    # Força o estilo Fusion (em vez do nativo do Windows) — sem isso, alguns
-    # elementos (principalmente tooltips) ignoram a cor definida via QSS/
-    # paleta e caem no visual padrão do Windows (fundo preto), destoando do
-    # tema claro/escuro do app.
-    app.setStyle("Fusion")
     # High-DPI
     #app.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
 

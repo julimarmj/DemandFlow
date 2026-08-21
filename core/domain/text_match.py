@@ -5,8 +5,41 @@ quais demandas aparecem na busca) quanto pela UI (pra destacar o trecho/
 palavra que bateu).
 """
 import re
+import unicodedata
 
 WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def strip_accents(text: str) -> str:
+    """Remove acentos/cedilha (á→a, ç→c, õ→o...) pra permitir busca exata
+    accent-insensitive — digitar "gas" precisa achar "gás" mesmo em buscas
+    curtas, onde a tolerância a erro de digitação (fuzzy) nem entra em jogo."""
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(c)
+    )
+
+
+_ACCENT_VARIANTS = {
+    'a': 'aáàâãä', 'e': 'eéèêë', 'i': 'iíìîï',
+    'o': 'oóòôõö', 'u': 'uúùûü', 'c': 'cç',
+}
+
+
+def accent_insensitive_pattern(query: str) -> str:
+    """Monta um regex que acha `query` no texto original ignorando acento
+    (ex.: "gas" acha "gás") — ao contrário de strip_accents(), que perde a
+    posição original do trecho, isso permite destacar o trecho exato como
+    apareceu no texto (com acento e tudo)."""
+    parts = []
+    for ch in query:
+        variants = _ACCENT_VARIANTS.get(ch.lower())
+        if variants:
+            cls = variants + variants.upper()
+            parts.append(f"[{re.escape(cls)}]")
+        else:
+            parts.append(re.escape(ch))
+    return "".join(parts)
 
 
 def fuzzy_prefix_match(query: str, word: str, max_dist: int) -> tuple[int, int]:

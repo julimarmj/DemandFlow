@@ -17,7 +17,7 @@ from PyQt6.QtGui import (
 )
 
 from core.domain.entities import Demand, Status, Priority
-from core.domain.text_match import find_fuzzy_match_span
+from core.domain.text_match import find_fuzzy_match_span, accent_insensitive_pattern
 from core.servicenow import extract_number as _servicenow_number, demand_url as _servicenow_url
 from presentation.widgets.spell_check import SpellCheckTextEdit
 
@@ -45,7 +45,7 @@ def _highlight_html(text: str, query: str, dark: bool) -> str:
     def _wrap(s: str) -> str:
         return f'<span style="background-color:{bg}; font-weight:600; border-radius:2px;">{_html.escape(s)}</span>'
 
-    matches = list(_re.finditer(_re.escape(query), text, _re.IGNORECASE))
+    matches = list(_re.finditer(accent_insensitive_pattern(query), text, _re.IGNORECASE))
     if matches:
         out, last = [], 0
         for m in matches:
@@ -81,13 +81,15 @@ def highlight_matches_in_text_edit(text_edit, query: str, dark: bool):
     fmt.setBackground(QColor("#5C3A0A" if dark else "#FEF3C7"))
     fmt.setFontWeight(QFont.Weight.DemiBold)
 
+    # Regex accent-insensitive em vez de doc.find() (que só ignora
+    # maiúscula/minúscula) — "gas" precisa achar "gás" no texto.
     found_any = False
-    cursor = QTextCursor(doc)
-    while True:
-        cursor = doc.find(query, cursor)  # sem FindCaseSensitively => case-insensitive
-        if cursor.isNull():
-            break
-        cursor.mergeCharFormat(fmt)
+    plain = doc.toPlainText()
+    for m in _re.finditer(accent_insensitive_pattern(query), plain, _re.IGNORECASE):
+        hcursor = QTextCursor(doc)
+        hcursor.setPosition(m.start())
+        hcursor.setPosition(m.end(), QTextCursor.MoveMode.KeepAnchor)
+        hcursor.mergeCharFormat(fmt)
         found_any = True
 
     if not found_any and len(query) >= 6:

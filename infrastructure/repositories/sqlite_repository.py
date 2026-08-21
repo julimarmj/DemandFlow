@@ -16,7 +16,7 @@ from core.domain.entities import (
 from core.ports.repositories import DemandRepository
 from core.domain.entities import Milestone, Reminder, PlannedAllocation
 from core.domain.entities import PHASE_WEIGHT_ESCOPO, PHASE_WEIGHT_DESENV
-from core.domain.text_match import fuzzy_word_match as _fuzzy_word_match
+from core.domain.text_match import fuzzy_word_match as _fuzzy_word_match, strip_accents as _strip_accents
 
 
 def _parse_date(s) -> date:
@@ -308,10 +308,17 @@ class SQLiteDemandRepository(DemandRepository):
         # "refinos", "resfriador", "remota", "tendencias" só por compartilhar
         # um prefixo de 2 letras, sem relação nenhuma com o que foi digitado.
         allow_fuzzy = len(q) >= 6
+        q_noaccent = _strip_accents(q)
         for d in all_d:
             if q:
                 fields = [d.title, d.description, d.client, d.responsible, *d.tags]
-                matched = any(q in x.lower() for x in fields)
+                # Sem acento é sempre tentado, independente do tamanho da busca
+                # (ex.: "gas" tem que achar "gás") — diferente do fuzzy, que
+                # tolera erro de digitação de verdade, isso é só normalização.
+                matched = any(
+                    q in x.lower() or q_noaccent in _strip_accents(x.lower())
+                    for x in fields
+                )
                 if not matched and allow_fuzzy:
                     matched = (
                         _fuzzy_word_match(q, d.title, 1)
