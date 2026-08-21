@@ -107,30 +107,51 @@ def _levenshtein(a: str, b: str) -> int:
 # inserção na distância de edição abaixo (ver _weighted_edit_distance).
 _ACCENTED = set("áàâãéêíóôõúüçÁÀÂÃÉÊÍÓÔÕÚÜÇ")
 
+# Mapa letra-acentuada -> letra-base, pra reconhecer quando uma substituição
+# é "só trocou o acento" (ex.: e/é, a/ã) em vez de uma letra totalmente
+# diferente — esse é o erro de digitação mais comum em português.
+_BASE_LETTER = {
+    'á': 'a', 'à': 'a', 'â': 'a', 'ã': 'a', 'ä': 'a',
+    'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
+    'í': 'i', 'ì': 'i', 'î': 'i', 'ï': 'i',
+    'ó': 'o', 'ò': 'o', 'ô': 'o', 'õ': 'o', 'ö': 'o',
+    'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u',
+    'ç': 'c',
+}
+
+
+def _base_letter(ch: str) -> str:
+    return _BASE_LETTER.get(ch, ch)
+
 
 def _weighted_edit_distance(a: str, b: str) -> float:
     """Como _levenshtein, mas com custos diferentes por tipo de edição —
-    reflete os erros de digitação mais comuns em português, onde esquecer um
-    acento/cedilha é muito mais frequente que trocar uma letra por outra no
-    meio da palavra:
-      • inserir letra acentuada (ex.: "funao"→"função", faltou o "ç"): 0.5
-      • inserir letra comum:                                          1.0
-      • remover uma letra (o candidato é mais curto que a palavra):   1.5
-      • substituir uma letra por outra:                               2.0
+    reflete os erros de digitação mais comuns em português:
+      • substituir só o acento (ex.: "voce"→"você", "e"→"é"):            0.3
+      • inserir letra acentuada (ex.: "funao"→"função", faltou o "ç"):   0.6
+      • substituir por uma letra totalmente diferente:                   1.0
+      • inserir letra comum:                                             1.0
+      • remover uma letra (o candidato é mais curto que a palavra):      1.3
     Só usada para ORDENAR candidatos já aceitos pelo corte de _levenshtein
     em _rank_suggestions — não substitui o filtro de distância máxima."""
     n, m = len(a), len(b)
     dp = [[0.0] * (m + 1) for _ in range(n + 1)]
     for i in range(1, n + 1):
-        dp[i][0] = dp[i - 1][0] + 1.5
+        dp[i][0] = dp[i - 1][0] + 1.3
     for j in range(1, m + 1):
-        dp[0][j] = dp[0][j - 1] + (0.5 if b[j - 1] in _ACCENTED else 1.0)
+        dp[0][j] = dp[0][j - 1] + (0.6 if b[j - 1] in _ACCENTED else 1.0)
     for i in range(1, n + 1):
         for j in range(1, m + 1):
-            ins_cost = 0.5 if b[j - 1] in _ACCENTED else 1.0
-            sub_cost = 0.0 if a[i - 1] == b[j - 1] else 2.0
+            ins_cost = 0.6 if b[j - 1] in _ACCENTED else 1.0
+            ca, cb = a[i - 1], b[j - 1]
+            if ca == cb:
+                sub_cost = 0.0
+            elif _base_letter(ca) == _base_letter(cb):
+                sub_cost = 0.3
+            else:
+                sub_cost = 1.0
             dp[i][j] = min(
-                dp[i - 1][j] + 1.5,
+                dp[i - 1][j] + 1.3,
                 dp[i][j - 1] + ins_cost,
                 dp[i - 1][j - 1] + sub_cost,
             )
@@ -138,17 +159,32 @@ def _weighted_edit_distance(a: str, b: str) -> float:
 
 
 def _rank_suggestions(word: str, candidates: list[str]) -> list[str]:
-    """Descarta candidatos muito distantes pela distância de edição real (o
-    ranking interno do hunspell às vezes deixa palavras "nada a ver" no topo —
-    compartilham letras, mas não são parecidas o suficiente pra fazer sentido)
-    e ordena os que sobraram pela distância PONDERADA, que prioriza correções
-    plausíveis (esquecer acento/cedilha) sobre trocas de letra arbitrárias."""
+    """Descarta candidatos com mais de 2 letras de diferença (o ranking
+    interno do hunspell às vezes deixa palavras "nada a ver" no topo —
+    compartilham letras, mas não são parecidas o suficiente pra fazer
+    sentido) e ordena os que sobraram pela distância ponderada — que já
+    prioriza corrigir só o acento — somada a uma pequena penalidade por
+    palavra ter tamanho diferente do digitado (troca de letra no meio é
+    mais comum que faltar/sobrar uma, mas não deve enterrar uma correção
+    de acento claramente melhor, ex.: "funao"→"função"). Mostra no máximo
+    4 sugestões: mais que isso vira ruído."""
     w = word.lower()
-    max_dist = max(2, len(w) // 4)
-    scored = [(c, _levenshtein(w, c.lower())) for c in candidates]
-    scored = [(c, d) for c, d in scored if d <= max_dist]
-    scored.sort(key=lambda t: _weighted_edit_distance(w, t[0].lower()))
-    return [c for c, _ in scored[:6]]
+    max_dist = 2
+    scored = []
+    for c in candidates:
+        cl = c.lower()
+        d = _levenshtein(w, cl)
+        if d > max_dist:
+            continue
+        length_penalty = abs(len(cl) - len(w)) * 0.2
+        # Hunspell às vezes sugere separar em duas palavras (ex.: "planeja
+        # meto") com custo de edição igual ao de uma correção de uma palavra
+        # só — pequeno desempate pra não ganhar de "planejamento" à toa.
+        compound_penalty = 0.4 if " " in cl else 0.0
+        score = _weighted_edit_distance(w, cl) + length_penalty + compound_penalty
+        scored.append((c, score))
+    scored.sort(key=lambda t: t[1])
+    return [c for c, _ in scored[:4]]
 
 
 def _suggestions(word: str) -> list[str]:
