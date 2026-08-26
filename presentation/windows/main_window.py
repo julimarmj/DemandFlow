@@ -27,6 +27,7 @@ from presentation.widgets.common_widgets import (
     status_badge, priority_badge, _highlight_html, highlight_matches_in_text_edit
 )
 from core.domain.text_match import fuzzy_word_match, strip_accents
+from core.servicenow import extract_number as _servicenow_number
 from presentation.styles.stylesheet import get_stylesheet
 from presentation.dialogs.demand_form import DemandFormDialog
 from presentation.dialogs.demand_detail import DemandDetailDialog
@@ -2490,7 +2491,17 @@ class MainWindow(QMainWindow):
         if demand_id in self._demand_pills:
             return
         dark  = self._dark
-        short = (title[:18] + "…") if len(title) > 18 else title
+        # O número do chamado ServiceNow (ex.: "T2DMND0055860 - ") sozinho já
+        # consome quase todo o espaço de 18 caracteres da pill, sem sobrar
+        # nada do título de verdade — mostra só o resto (a tooltip completa,
+        # com o número, continua disponível no hover).
+        display_title = title
+        sn_number = _servicenow_number(title)
+        if sn_number:
+            rest = title[len(sn_number):].lstrip(" -–—:")
+            if rest:
+                display_title = rest
+        short = (display_title[:18] + "…") if len(display_title) > 18 else display_title
 
         bg     = "#0F172A" if dark else "#F8FAFC"   # tom levemente recuado do header
         bg_hov = "#1E293B" if dark else "#F1F5F9"
