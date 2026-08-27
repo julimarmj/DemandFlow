@@ -143,6 +143,17 @@ class DemandUseCases:
             user=user,
         ))
 
+        # Concluir a demanda pelo botão de status (em vez de marcar o
+        # milestone de Conclusão) também marca todos os milestones como
+        # concluídos — os dois caminhos precisam terminar no mesmo estado
+        # consistente. change_milestone_status já é seguro de chamar mesmo
+        # pro milestone de Conclusão em si (o espelhamento reverso dele não
+        # re-dispara change_status porque o status já foi salvo acima).
+        if new_status == Status.CONCLUIDA:
+            for m in self._repo.get_milestones(id):
+                if not m.done:
+                    self.change_milestone_status(m.id, True, user=user)
+
         return saved
 
     def update_hours(self, id: int, real_hours: float, user: str = "Usuário") -> Demand:
