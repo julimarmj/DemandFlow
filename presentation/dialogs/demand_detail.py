@@ -624,6 +624,7 @@ class DemandDetailDialog(QDialog):
         layout = QVBoxLayout(w)
         layout.setContentsMargins(24, 16, 24, 16)
         layout.setSpacing(0)
+        self._files_tab_layout = layout
 
         if self._fs:
             self._file_manager = FileManagerWidget(
@@ -634,12 +635,23 @@ class DemandDetailDialog(QDialog):
                 parent       = w,
             )
             self._file_manager.files_changed.connect(lambda: self.demand_updated.emit(self.demand))
+            self._file_manager.expand_toggled.connect(self._on_files_expand_toggled)
             layout.addWidget(self._file_manager)
         else:
             lbl = QLabel("Serviço de arquivos não configurado.")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             layout.addWidget(lbl)
         return w
+
+    def _on_files_expand_toggled(self, expanded: bool):
+        """Botão de expandir do preview (dentro da aba Arquivos) — some com
+        o cabeçalho e a barra de abas pra o preview ocupar a janela de
+        detalhes inteira; restaura tudo ao clicar de novo (ou ao fechar o
+        preview, que já sai do modo expandido sozinho)."""
+        self._header_frame.setVisible(not expanded)
+        self.tabs.tabBar().setVisible(not expanded)
+        margins = (0, 0, 0, 0) if expanded else (24, 16, 24, 16)
+        self._files_tab_layout.setContentsMargins(*margins)
 
     def _render_files(self):
         while self.files_container.count():

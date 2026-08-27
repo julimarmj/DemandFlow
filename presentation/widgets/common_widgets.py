@@ -909,11 +909,12 @@ class DemandPreviewPanel(QFrame):
         if file_service:
             from ..widgets.file_manager import FileManagerWidget
             fm = FileManagerWidget(
-                demand_id    = demand.id,
-                demand_title = demand.title,
-                file_service = file_service,
-                dark         = self._dark,
-                readonly     = True,       # <- modo somente leitura
+                demand_id           = demand.id,
+                demand_title        = demand.title,
+                file_service        = file_service,
+                dark                = self._dark,
+                readonly            = True,   # <- modo somente leitura
+                enable_file_preview = False,  # <- preview de arquivo só no diálogo de detalhes
             )
             # Substitui o placeholder no layout
             idx = self._layout.indexOf(self._file_manager_placeholder)

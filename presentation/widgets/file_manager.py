@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem,
     QPushButton, QLabel, QLineEdit, QFrame, QMenu, QMessageBox,
     QInputDialog, QFileDialog, QAbstractItemView, QApplication, QSizePolicy,
-    QStyle, QFileIconProvider
+    QStyle, QFileIconProvider, QSplitter
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QUrl, QTimer, QFileInfo, QMimeData
 from PyQt6.QtGui import (
@@ -29,6 +29,7 @@ from PyQt6.QtGui import (
 )
 
 from infrastructure.services.file_service import DemandFileService
+from presentation.widgets.file_preview import FilePreviewPanel
 
 
 class _DragOutTree(QTreeWidget):
@@ -63,6 +64,7 @@ class _DragOutTree(QTreeWidget):
 
 class FileManagerWidget(QWidget):
     files_changed = pyqtSignal()
+    expand_toggled = pyqtSignal(bool)  # repassa o expandir/restaurar do preview pra quem incorporou
 
     def __init__(
         self,
@@ -71,6 +73,7 @@ class FileManagerWidget(QWidget):
         file_service: DemandFileService,
         dark: bool = False,
         readonly=False,
+        enable_file_preview: bool = True,
         parent=None,
     ):
         super().__init__(parent)
@@ -79,6 +82,11 @@ class FileManagerWidget(QWidget):
         self._fs          = file_service
         self._dark        = dark
         self._readonly    = readonly
+        # No preview rápido da demanda (common_widgets.py) o gerenciador é só
+        # pra dar uma olhada nos arquivos — abrir o preview de arquivo ali
+        # também não faz sentido, é uma função pensada pro gerenciador
+        # completo (dentro do diálogo de detalhes da demanda).
+        self._preview_enabled = enable_file_preview
 
         # Clipboard interno (complementa o do SO)
         self._clip_path:  Optional[Path] = None
@@ -107,6 +115,7 @@ class FileManagerWidget(QWidget):
         self._dark = dark
         self.tree.setStyleSheet(self._tree_style())
         self._drop_hint_normal_style()
+        self._preview_panel.set_dark(dark)
         ss_input = f"""
             QLineEdit {{
                 background: {'#1E293B' if dark else ''};
@@ -151,12 +160,12 @@ class FileManagerWidget(QWidget):
             """)
         top.addWidget(self._search_input)
 
-        exp_btn = QPushButton()
-        exp_btn.setIcon(qta.icon("fa6s.folder-open", color="#64748B"))
-        exp_btn.setToolTip("Abrir pasta da demanda no Explorer")
-        exp_btn.setFixedSize(32, 28)
-        exp_btn.clicked.connect(self._open_root_in_explorer)
-        top.addWidget(exp_btn)
+        self._explorer_btn = QPushButton()
+        self._explorer_btn.setIcon(qta.icon("fa6s.folder-open", color="#64748B"))
+        self._explorer_btn.setToolTip("Abrir pasta da demanda no Explorer")
+        self._explorer_btn.setFixedSize(32, 28)
+        self._explorer_btn.clicked.connect(self._open_root_in_explorer)
+        top.addWidget(self._explorer_btn)
 
         root.addLayout(top)
 
@@ -189,8 +198,22 @@ class FileManagerWidget(QWidget):
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
         self.tree.itemDoubleClicked.connect(self._on_double_click)
         self.tree.itemClicked.connect(self._on_click_maybe_slow_dblclick)
+        self.tree.itemSelectionChanged.connect(self._on_selection_changed)
         self.tree.setStyleSheet(self._tree_style())
-        root.addWidget(self.tree)
+
+        # ── Splitter: árvore + pré-visualização ─────────────────────────────
+        # Mesmo padrão do DemandPreviewPanel (common_widgets.py) — some por
+        # padrão, aparece ao selecionar um arquivo, fecha no X.
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.addWidget(self.tree)
+        self._preview_panel = FilePreviewPanel(dark=self._dark)
+        self._preview_panel.setVisible(False)
+        self._preview_panel.expand_toggled.connect(self._on_preview_expand_toggled)
+        self._pre_expand_splitter_sizes: Optional[list[int]] = None
+        self._splitter.addWidget(self._preview_panel)
+        self._splitter.setStretchFactor(0, 1)
+        self._splitter.setStretchFactor(1, 0)
+        root.addWidget(self._splitter, 1)
 
         # ── Status bar ────────────────────────────────────────────────────────
         self._status_lbl = QLabel("")
@@ -569,6 +592,58 @@ class FileManagerWidget(QWidget):
             self._move_files(so_files, target_dir)
 
         self.refresh()
+
+    # ── Pré-visualização ─────────────────────────────────────────────────────
+
+    def _ideal_tree_width(self) -> int:
+        """Largura mínima pra mostrar as 3 colunas (Nome/Tamanho/Modificado
+        em) sem sobra nem corte — usada pra abrir o preview ocupando o
+        espaço que a árvore não precisa, em vez de tirar sempre os mesmos
+        340px fixos dela."""
+        col2_hint = self.tree.sizeHintForColumn(2)
+        if col2_hint <= 0:
+            col2_hint = self.tree.header().sectionSizeHint(2)
+        width = self.tree.columnWidth(0) + self.tree.columnWidth(1) + col2_hint
+        width += self.tree.frameWidth() * 2
+        width += 24  # respiro (scrollbar, padding de célula)
+        return width
+
+    def _on_selection_changed(self):
+        if not self._preview_enabled:
+            return
+        items = self.tree.selectedItems()
+        if len(items) != 1:
+            return
+        node = items[0].data(0, Qt.ItemDataRole.UserRole)
+        if not node or node.get("is_dir") or node.get("is_root"):
+            return
+        self._preview_panel.load_file(node["path"])
+        if not self._preview_panel.isVisible():
+            self._preview_panel.setVisible(True)
+            total = self._splitter.width()
+            min_preview = 340
+            tree_width = min(self._ideal_tree_width(), max(200, total - min_preview))
+            tree_width = max(200, tree_width)
+            self._splitter.setSizes([tree_width, max(min_preview, total - tree_width)])
+
+    def _on_preview_expand_toggled(self, expanded: bool):
+        """Expandir: some com tudo que não é o preview em si (busca, árvore,
+        barra de status) — quem incorporou este widget (o diálogo de
+        detalhes da demanda) escuta o mesmo sinal repassado e some com o
+        próprio cabeçalho/abas, deixando o preview ocupar a janela inteira."""
+        self._search_input.setVisible(not expanded)
+        self._explorer_btn.setVisible(not expanded)
+        self._drop_hint.setVisible(False if expanded else not self._readonly)
+        self._status_lbl.setVisible(not expanded)
+        if expanded:
+            self._pre_expand_splitter_sizes = self._splitter.sizes()
+            self.tree.setVisible(False)
+            self._splitter.setSizes([0, self._splitter.width()])
+        else:
+            self.tree.setVisible(True)
+            if self._pre_expand_splitter_sizes:
+                self._splitter.setSizes(self._pre_expand_splitter_sizes)
+        self.expand_toggled.emit(expanded)
 
     # ── Double-click ──────────────────────────────────────────────────────────
 
