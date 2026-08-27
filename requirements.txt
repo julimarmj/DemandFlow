@@ -8,6 +8,13 @@ PyQt6-Qt6>=6.6.0
 reportlab>=4.0.0      # Geração de PDF
 openpyxl>=3.1.0       # Exportação Excel
 
+# Criação de arquivo Word/PowerPoint em branco na aba de Arquivos (menu
+# "Novo") — pré-visualização de .docx/.pptx foi tentada e descartada (não
+# ficou boa o suficiente); PDF/imagem/texto/DWG usam QtPdf/dwg2SVG, sem
+# depender dessas duas
+python-docx>=1.2.0
+python-pptx>=1.0.2
+
 # Correção ortográfica (NotePad / SpellCheckLineEdit) — binding C++ do Hunspell
 cyhunspell>=2.0.2
 

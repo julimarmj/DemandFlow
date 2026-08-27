@@ -1,0 +1,14 @@
+Binários de terceiros embutidos nesta pasta:
+
+  dwg2SVG.exe, libredwg-0.dll, libiconv-2.dll
+
+Vêm da distribuição oficial Windows (win64) do projeto LibreDWG, versão 0.14,
+sem modificação:
+  https://github.com/LibreDWG/libredwg/releases/tag/0.14
+
+LibreDWG é software livre licenciado sob a GNU General Public License v3
+(o binário libiconv-2.dll é da GNU libiconv, licenciada sob LGPL). Código-fonte
+completo disponível em https://github.com/LibreDWG/libredwg — usado aqui
+apenas para converter arquivos .dwg em SVG (dwg2SVG) para a pré-visualização
+na aba de Arquivos; não é linkado/embutido no executável do DemandFlow, é
+chamado como processo externo separado.

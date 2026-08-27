@@ -12,6 +12,7 @@ datas = [
     ('resources/icon.ico', 'resources'),
     ('resources/arrow_down_light.svg', 'resources'),
     ('resources/arrow_down_dark.svg', 'resources'),
+    ('resources/libredwg', 'resources/libredwg'),  # dwg2SVG.exe p/ preview de DWG
     ('version.py', '.'),
     ('updater.bat', '.'),
 ]
