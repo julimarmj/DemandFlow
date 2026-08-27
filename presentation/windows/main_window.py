@@ -2202,6 +2202,7 @@ class MainWindow(QMainWindow):
                 )
                 il.addWidget(item_lbl)
                 item_frame.mousePressEvent = lambda _, demand=d: self._kb_select_demand(demand)
+                item_frame.mouseDoubleClickEvent = lambda _, demand=d: self._open_demand_detail(demand)
                 self._kb_list_layout.addWidget(item_frame)
 
         self._kb_list_layout.addStretch()
