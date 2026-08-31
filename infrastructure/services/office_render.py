@@ -25,10 +25,13 @@ pré-visualização", igual todo o resto desse módulo de preview.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import sys
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 _CACHE_DIR = Path.home() / ".demandflow" / "cache" / "office_pdf"
 _CACHE_MAX_BYTES = 300 * 1024 * 1024  # 300MB — poda os mais antigos acima disso
@@ -151,6 +154,13 @@ def convert_to_pdf(path: str) -> Optional[str]:
         finally:
             pythoncom.CoUninitialize()
     except Exception:
+        # Até agora essa falha desaparecia sem deixar rastro nenhum — o
+        # usuário só via "sem pré-visualização", sem chance de saber se era
+        # Office não instalado, arquivo protegido por senha, macro bloqueada,
+        # documento corrompido, ou outra coisa qualquer. Loga o motivo real
+        # antes de continuar tratando como "sem preview" (comportamento não
+        # muda, só passa a ficar registrado o porquê).
+        logger.warning("Falha ao converter '%s' (%s) para PDF via Office", path, kind, exc_info=True)
         ok = False
     finally:
         if src_copy:
@@ -169,6 +179,7 @@ def convert_to_pdf(path: str) -> Optional[str]:
     try:
         os.replace(tmp_path, cache_path)
     except OSError:
+        logger.warning("Não foi possível mover o PDF convertido pro cache ('%s')", path, exc_info=True)
         try:
             os.remove(tmp_path)
         except OSError:
@@ -215,12 +226,25 @@ def _convert_powerpoint(path: str, out_pdf: str) -> bool:
     import win32com.client
     app = win32com.client.DispatchEx("PowerPoint.Application")
     try:
-        # PowerPoint (diferente de Word/Excel) não aceita Visible=False de
-        # forma confiável via automação — abrir com args extras posicionais
-        # (ReadOnly/Untitled/WithWindow) também dá erro intermitente de
-        # marshalling do pywin32; abrir só com o caminho (defaults) e
-        # exportar com SaveAs é o que se mostrou estável nos testes.
-        pres = app.Presentations.Open(path)
+        # PowerPoint (diferente de Word/Excel) não deixa setar
+        # Application.Visible = False — é documentado assim pela própria
+        # Microsoft, a janela do app sempre aparece. O jeito de não abrir
+        # janela nenhuma é o parâmetro WithWindow do Presentations.Open, mas
+        # passando os 4 argumentos POSICIONAIS (ReadOnly/Untitled/WithWindow)
+        # dava erro intermitente de marshalling do pywin32 ("The Python
+        # instance can not be converted to a COM object"). Passando só esse
+        # como argumento NOMEADO (os outros ficam no padrão) não reproduz o
+        # erro — testado repetidas vezes. Se mesmo assim falhar por algum
+        # motivo, cai pro modo antigo (janela aparece, mas minimizada, pelo
+        # menos não rouba o foco) em vez de travar a conversão inteira.
+        try:
+            pres = app.Presentations.Open(path, WithWindow=False)
+        except Exception:
+            pres = app.Presentations.Open(path)
+            try:
+                pres.Windows(1).WindowState = 2  # ppWindowMinimized
+            except Exception:
+                pass
         try:
             pres.SaveAs(out_pdf, 32)  # ppSaveAsPDF
         finally:

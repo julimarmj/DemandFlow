@@ -5,12 +5,15 @@ import os
 import re
 import shutil
 import time
+import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
 from PyQt6.QtWidgets import QFileIconProvider
 from PyQt6.QtCore import QFileInfo
+
+logger = logging.getLogger(__name__)
 
 
 import ctypes
@@ -269,6 +272,7 @@ class DemandFileService:
             return new_path
         except OSError:
             # Pasta em uso (ex: sync OneDrive) — retorna o caminho antigo sem criar novo
+            logger.warning("Não foi possível renomear a pasta da demanda %s para '%s'", demand_id, new_name, exc_info=True)
             return old
 
     # ── Roteamento automático ─────────────────────────────────────────────────
@@ -387,6 +391,7 @@ class DemandFileService:
                 last_err = e
                 if attempt < 3:
                     time.sleep(0.3 * (attempt + 1))
+        logger.warning("'%s' continuou bloqueado após 4 tentativas ao tentar %s", name, verb, exc_info=True)
         raise PermissionError(
             f'Não foi possível {verb} "{name}" — o arquivo pode estar aberto em '
             f"outro programa (leitor de PDF, Word, etc.) ou sendo usado por "
@@ -527,6 +532,25 @@ class DemandFileService:
         root = self.demand_root(demand_id, demand_title)
         return [self._build_node(root, is_root=True)]
 
+    _FILE_ATTRIBUTE_HIDDEN = 0x2
+    _FILE_ATTRIBUTE_SYSTEM = 0x4
+
+    @classmethod
+    def _is_hidden(cls, path: Path) -> bool:
+        """Espelha o comportamento padrão do Explorer: não lista arquivo com
+        atributo Oculto/Sistema do Windows. Cobre, entre outros, os arquivos
+        de trava temporários que o Word/Excel/PowerPoint criam ao lado do
+        original enquanto ele está aberto (~$nome.docx) — não são conteúdo
+        do usuário, só um detalhe interno do Office, e o Explorer também só
+        os mostra com "Exibir itens ocultos" ligado."""
+        if path.name.startswith("~$"):
+            return True
+        try:
+            attrs = path.stat().st_file_attributes
+        except (OSError, AttributeError):
+            return False
+        return bool(attrs & (cls._FILE_ATTRIBUTE_HIDDEN | cls._FILE_ATTRIBUTE_SYSTEM))
+
     def _build_node(self, path: Path, is_root: bool = False) -> dict:
         try:
             stat = path.stat()
@@ -548,14 +572,19 @@ class DemandFileService:
         if path.is_dir():
             try:
                 entries = sorted(path.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+                entries = [e for e in entries if not self._is_hidden(e)]
             except OSError:
+                # Pasta aparece vazia no gerenciador sem essa mensagem no log —
+                # sem isso não tinha como diferenciar "pasta vazia mesmo" de
+                # "não deu pra ler o conteúdo dela" (permissão, link quebrado).
+                logger.warning("Não foi possível listar o conteúdo de '%s'", path, exc_info=True)
                 entries = []
             children = []
             for e in entries:
                 try:
                     children.append(self._build_node(e))
                 except OSError:
-                    pass
+                    logger.warning("Item '%s' ignorado na árvore de arquivos", e, exc_info=True)
             node["children"] = children
         return node
 
@@ -565,6 +594,8 @@ class DemandFileService:
         q = query.lower().strip()
         results = []
         for p in root.rglob("*"):
+            if self._is_hidden(p):
+                continue
             if q in p.name.lower():
                 try:
                     stat = p.stat()
@@ -590,13 +621,13 @@ class DemandFileService:
         root = self.find_demand_root(demand_id)
         if not root:
             return 0
-        return sum(1 for p in root.rglob("*") if p.is_file())
+        return sum(1 for p in root.rglob("*") if p.is_file() and not self._is_hidden(p))
 
     def total_size(self, demand_id: int) -> int:
         root = self.find_demand_root(demand_id)
         if not root:
             return 0
-        return sum(p.stat().st_size for p in root.rglob("*") if p.is_file())
+        return sum(p.stat().st_size for p in root.rglob("*") if p.is_file() and not self._is_hidden(p))
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

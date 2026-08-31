@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QWidget, QPlainTextEdit, QSizePolicy, QGraphicsView, QGraphicsScene,
 )
 from PyQt6.QtGui import QPixmap, QDesktopServices, QPainter, QColor
-from PyQt6.QtCore import Qt, QUrl, pyqtSignal, QThread
+from PyQt6.QtCore import Qt, QUrl, QSize, pyqtSignal, QThread
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtSvgWidgets import QGraphicsSvgItem
 
@@ -176,7 +176,17 @@ class FilePreviewPanel(QFrame):
         self._dark = dark
         self._current_path = None
         self._expanded = False
-        self._office_worker: _OfficeConvertWorker | None = None
+        # Uma conversão Office rodando de verdade numa QThread não pode ter
+        # sua referência Python descartada antes de terminar — o objeto seria
+        # coletado pelo GC ainda com a thread ativa, e isso é um erro FATAL
+        # do Qt (derruba o processo, sem exceção Python pra capturar). Por
+        # isso é uma lista (uma entrada por conversão em andamento), não uma
+        # única referência trocada a cada arquivo novo — cada worker só sai
+        # da lista quando o próprio Qt confirma (sinal `finished`) que a
+        # thread realmente parou. Reproduzido de verdade: clicar em vários
+        # arquivos Office pesados em sequência, antes da conversão do
+        # anterior terminar, derrubava o app inteiro.
+        self._office_workers: list[_OfficeConvertWorker] = []
         self.setObjectName("card")
         self.setMinimumWidth(280)
         self._build()
@@ -268,11 +278,17 @@ class FilePreviewPanel(QFrame):
         cv_layout = QVBoxLayout(converting)
         cv_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cv_layout.setSpacing(12)
-        cv_icon = QLabel()
-        cv_icon.setPixmap(qta.icon("fa6s.file-pdf", color="#94A3B8").pixmap(40, 40))
+        # Ícone girando (qtawesome.Spin) em vez de um ícone estático — deixa
+        # claro que é algo em andamento, não travado. autostart=False: só
+        # gira enquanto essa página está de fato visível (start/stop em
+        # _load_office/_on_office_converted), sem manter um timer rodando
+        # pra sempre no fundo enquanto o usuário olha outra coisa.
+        cv_icon = qta.IconWidget("fa6s.circle-notch", color="#94A3B8", size=QSize(40, 40))
+        self._converting_spin = qta.Spin(cv_icon, interval=16, step=6, autostart=False)
+        cv_icon.setIcon(qta.icon("fa6s.circle-notch", color="#94A3B8", animation=self._converting_spin))
         cv_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cv_layout.addWidget(cv_icon)
-        cv_msg = QLabel("Convertendo para PDF...")
+        cv_msg = QLabel("Carregando preview...")
         cv_msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cv_msg.setStyleSheet("color: #94A3B8; font-size: 12px;")
         cv_layout.addWidget(cv_msg)
@@ -305,6 +321,18 @@ class FilePreviewPanel(QFrame):
         self._error_lbl.setWordWrap(True)
         self._error_lbl.setStyleSheet("color: #EF4444; font-size: 12px;")
         self._error_page_idx = self._stack.addWidget(self._error_lbl)
+
+        # Gira o ícone só enquanto a página de "carregando" está de fato
+        # visível — reage a QUALQUER troca de página (não importa qual método
+        # trocou), então não tem como ficar rodando à toa no fundo nem ficar
+        # parado por esquecimento em algum caminho novo que apareça depois.
+        self._stack.currentChanged.connect(self._on_stack_page_changed)
+
+    def _on_stack_page_changed(self, index: int):
+        if index == self._converting_page_idx:
+            self._converting_spin.start()
+        else:
+            self._converting_spin.stop()
 
     # ── Carregamento ─────────────────────────────────────────────────────────
 
@@ -374,21 +402,30 @@ class FilePreviewPanel(QFrame):
 
     def _load_office(self, p: Path):
         # Já convertido antes e ainda válido (arquivo original não mudou)?
-        # Mostra na hora, sem passar pela tela de "convertendo".
+        # Mostra na hora, sem passar pela tela de "carregando".
         cached = office_render.get_cached_pdf(str(p))
         if cached:
             self._load_pdf(Path(cached))
             return
         self._stack.setCurrentIndex(self._converting_page_idx)
-        if self._office_worker is not None:
-            try:
-                self._office_worker.finished_convert.disconnect(self._on_office_converted)
-            except TypeError:
-                pass
-        worker = _OfficeConvertWorker(str(p))
+        path_str = str(p)
+        # Já tem uma conversão desse MESMO arquivo em andamento (ex.: usuário
+        # voltou pra ele antes da conversão anterior terminar)? Não duplica —
+        # a conversão em andamento já vai atualizar a tela sozinha quando
+        # terminar, via _on_office_converted.
+        if any(w.isRunning() and w._path == path_str for w in self._office_workers):
+            return
+        worker = _OfficeConvertWorker(path_str)
         worker.finished_convert.connect(self._on_office_converted)
-        self._office_worker = worker
+        self._office_workers.append(worker)
+        worker.finished.connect(lambda w=worker: self._cleanup_office_worker(w))
         worker.start()
+
+    def _cleanup_office_worker(self, worker: _OfficeConvertWorker):
+        # Só chega aqui depois que a thread já parou de vez (sinal `finished`
+        # nativo da QThread) — remover antes disso é o que causava o crash.
+        if worker in self._office_workers:
+            self._office_workers.remove(worker)
 
     def _on_office_converted(self, original_path: str, pdf_path):
         if original_path != self._current_path:

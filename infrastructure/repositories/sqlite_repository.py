@@ -5,6 +5,8 @@ Preparado para migração para PostgreSQL (troca apenas esta camada).
 """
 import sqlite3
 import json
+import logging
+import functools
 from datetime import date, datetime, timedelta
 from typing import Optional
 from pathlib import Path
@@ -17,6 +19,47 @@ from core.ports.repositories import DemandRepository
 from core.domain.entities import Milestone, Reminder, PlannedAllocation
 from core.domain.entities import PHASE_WEIGHT_ESCOPO, PHASE_WEIGHT_DESENV
 from core.domain.text_match import fuzzy_word_match as _fuzzy_word_match, strip_accents as _strip_accents
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_map(rows, converter, label: str) -> list:
+    """Converte cada linha com `converter`, mas uma linha com dado corrompido
+    (enum inválido, data fora do formato ISO, JSON quebrado em tags/
+    dependency_ids, etc.) não pode derrubar a lista inteira — sem isso, UM
+    registro ruim em QUALQUER lugar do banco travava até ações que não têm
+    nada a ver com ele (ex.: telas que listam tudo pra montar contadores de
+    alerta rodam depois de toda mudança de status, então um registro
+    corrompido em outra demanda completamente diferente derrubava o app ao
+    mudar o status de qualquer uma). Aqui só pula a linha ruim e loga."""
+    result = []
+    for r in rows:
+        try:
+            result.append(converter(r))
+        except Exception:
+            row_id = r["id"] if "id" in r.keys() else "?"
+            logger.warning("Registro ignorado (%s id=%s) — dado inválido no banco", label, row_id, exc_info=True)
+    return result
+
+
+def _log_write_errors(fn):
+    """Decorator pros métodos de ESCRITA (save/delete/add_*) — hoje eles não
+    tinham NENHUM tratamento de erro, então um banco travado (ex.: outra
+    cópia do app aberta, antivírus escaneando o arquivo .db, disco cheio)
+    derrubava a ação inteira sem deixar rastro nenhum no log, só a leitura
+    (_safe_map acima) tinha isso. Não muda o comportamento (a exceção
+    continua subindo igual antes — quem chama ainda precisa saber que a
+    gravação falhou) — só garante que fica registrado o quê e onde, antes de
+    relançar."""
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return fn(self, *args, **kwargs)
+        except Exception:
+            ident = getattr(args[0], "id", args[0]) if args else None
+            logger.error("Falha ao gravar no banco em %s (id=%s)", fn.__name__, ident, exc_info=True)
+            raise
+    return wrapper
 
 
 def _parse_date(s) -> date:
@@ -251,19 +294,24 @@ class SQLiteDemandRepository(DemandRepository):
                 "CASE priority WHEN 'critica' THEN 1 WHEN 'alta' THEN 2 "
                 "WHEN 'media' THEN 3 ELSE 4 END, deadline ASC"
             ).fetchall()
-            return [self._row_to_demand(r) for r in rows]
+            return _safe_map(rows, self._row_to_demand, "demands")
 
     def get_by_id(self, id: int) -> Optional[Demand]:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM demands WHERE id=?", (id,)).fetchone()
             if not row:
                 return None
-            demand = self._row_to_demand(row)
+            try:
+                demand = self._row_to_demand(row)
+            except Exception:
+                logger.error("Demanda id=%s tem dado inválido no banco e não pôde ser aberta", id, exc_info=True)
+                raise
             demand.comments    = self.get_comments(id)
             demand.history     = self.get_history(id)
             demand.attachments = self.get_attachments(id)
             return demand
 
+    @_log_write_errors
     def save(self, demand: Demand) -> Demand:
         today = date.today().isoformat()
         with self._conn() as conn:
@@ -292,6 +340,7 @@ class SQLiteDemandRepository(DemandRepository):
                 )
         return demand
 
+    @_log_write_errors
     def delete(self, id: int) -> bool:
         with self._conn() as conn:
             conn.execute("DELETE FROM demands WHERE id=?", (id,))
@@ -334,6 +383,7 @@ class SQLiteDemandRepository(DemandRepository):
             result.append(d)
         return result
 
+    @_log_write_errors
     def add_comment(self, comment: Comment) -> Comment:
         with self._conn() as conn:
             cur = conn.execute(
@@ -354,6 +404,7 @@ class SQLiteDemandRepository(DemandRepository):
         return entry
     '''
 
+    @_log_write_errors
     def add_history(self, entry: HistoryEntry) -> HistoryEntry:
         with self._conn() as conn:
             cur = conn.execute(
@@ -368,6 +419,7 @@ class SQLiteDemandRepository(DemandRepository):
             entry.id = cur.lastrowid
         return entry
     
+    @_log_write_errors
     def add_attachment(self, att: Attachment) -> Attachment:
         with self._conn() as conn:
             cur = conn.execute(
@@ -382,21 +434,21 @@ class SQLiteDemandRepository(DemandRepository):
             rows = conn.execute(
                 "SELECT * FROM comments WHERE demand_id=? ORDER BY created_at", (demand_id,)
             ).fetchall()
-            return [self._row_to_comment(r) for r in rows]
+            return _safe_map(rows, self._row_to_comment, "comments")
 
     def get_history(self, demand_id: int) -> list[HistoryEntry]:
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM history WHERE demand_id=? ORDER BY created_at DESC", (demand_id,)
             ).fetchall()
-            return [self._row_to_history(r) for r in rows]
+            return _safe_map(rows, self._row_to_history, "history")
 
     def get_attachments(self, demand_id: int) -> list[Attachment]:
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM attachments WHERE demand_id=? ORDER BY created_at", (demand_id,)
             ).fetchall()
-            return [self._row_to_attachment(r) for r in rows]
+            return _safe_map(rows, self._row_to_attachment, "attachments")
 
     def get_milestones(self, demand_id: int) -> list:
         with self._conn() as conn:
@@ -404,17 +456,23 @@ class SQLiteDemandRepository(DemandRepository):
                 "SELECT * FROM milestones WHERE demand_id=? ORDER BY sort_order, id",
                 (demand_id,)
             ).fetchall()
-            return [self._row_to_milestone(r) for r in rows]
-        
+            return _safe_map(rows, self._row_to_milestone, "milestones")
+
     def get_milestone(self, milestone_id: int):
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT * FROM milestones WHERE id=?",
                 (milestone_id,)
             ).fetchone()
+            if not row:
+                return None
+            try:
+                return self._row_to_milestone(row)
+            except Exception:
+                logger.error("Milestone id=%s tem dado inválido no banco", milestone_id, exc_info=True)
+                raise
 
-            return self._row_to_milestone(row) if row else None
-
+    @_log_write_errors
     def save_milestone(self, m) -> object:
         with self._conn() as conn:
             if m.id == 0:
@@ -432,10 +490,12 @@ class SQLiteDemandRepository(DemandRepository):
                 )
         return m
 
+    @_log_write_errors
     def delete_milestone(self, milestone_id: int):
         with self._conn() as conn:
             conn.execute("DELETE FROM milestones WHERE id=?", (milestone_id,))
 
+    @_log_write_errors
     def seed_milestones(self, demand_id: int, demand_deadline: date):
         """Cria os 3 milestones padrão se a demanda ainda não tiver nenhum."""
         with self._conn() as conn:
@@ -483,15 +543,16 @@ class SQLiteDemandRepository(DemandRepository):
                 "SELECT * FROM reminders WHERE demand_id=? ORDER BY remind_at",
                 (demand_id,)
             ).fetchall()
-            return [self._row_to_reminder(r) for r in rows]
+            return _safe_map(rows, self._row_to_reminder, "reminders")
 
     def get_all_reminders(self) -> list:
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM reminders ORDER BY remind_at"
             ).fetchall()
-            return [self._row_to_reminder(r) for r in rows]
+            return _safe_map(rows, self._row_to_reminder, "reminders")
 
+    @_log_write_errors
     def save_reminder(self, r) -> object:
         with self._conn() as conn:
             if r.id == 0:
@@ -508,6 +569,7 @@ class SQLiteDemandRepository(DemandRepository):
                 )
         return r
 
+    @_log_write_errors
     def delete_reminder(self, reminder_id: int):
         with self._conn() as conn:
             conn.execute("DELETE FROM reminders WHERE id=?", (reminder_id,))
@@ -588,7 +650,7 @@ class SQLiteDemandRepository(DemandRepository):
                 "SELECT * FROM work_logs WHERE demand_id=? ORDER BY started_at DESC",
                 (demand_id,)
             ).fetchall()
-            return [self._row_to_worklog(r) for r in rows]
+            return _safe_map(rows, self._row_to_worklog, "work_logs")
 
     def get_all_work_logs(self) -> list:
         self._ensure_worklog_table()
@@ -596,8 +658,9 @@ class SQLiteDemandRepository(DemandRepository):
             rows = conn.execute(
                 "SELECT * FROM work_logs ORDER BY started_at DESC"
             ).fetchall()
-            return [self._row_to_worklog(r) for r in rows]
+            return _safe_map(rows, self._row_to_worklog, "work_logs")
 
+    @_log_write_errors
     def save_work_log(self, wl) -> object:
         self._ensure_worklog_table()
         cat = getattr(wl, "category", "")
@@ -635,6 +698,7 @@ class SQLiteDemandRepository(DemandRepository):
                 )
         return wl
 
+    @_log_write_errors
     def delete_work_log(self, worklog_id: int):
         self._ensure_worklog_table()
         with self._conn() as conn:
@@ -686,7 +750,7 @@ class SQLiteDemandRepository(DemandRepository):
                 "SELECT * FROM planned_allocations WHERE demand_id=? ORDER BY week_start",
                 (demand_id,)
             ).fetchall()
-            return [self._row_to_planned_allocation(r) for r in rows]
+            return _safe_map(rows, self._row_to_planned_allocation, "planned_allocations")
 
     def get_all_planned_allocations(self, week_from: date = None, week_to: date = None) -> list:
         """Carrega de todas as demandas de uma vez — usado pela grade de capacidade
@@ -702,8 +766,9 @@ class SQLiteDemandRepository(DemandRepository):
                 q += " AND week_start <= ?"
                 params.append(week_to.isoformat())
             rows = conn.execute(q, params).fetchall()
-            return [self._row_to_planned_allocation(r) for r in rows]
+            return _safe_map(rows, self._row_to_planned_allocation, "planned_allocations")
 
+    @_log_write_errors
     def save_planned_allocation(self, pa) -> object:
         """Upsert por (demand_id, week_start) — chave natural da tabela, não o id."""
         self._ensure_planned_allocation_table()
@@ -721,6 +786,7 @@ class SQLiteDemandRepository(DemandRepository):
             pa.id = row[0]
         return pa
 
+    @_log_write_errors
     def delete_planned_allocations_for_demand(self, demand_id: int):
         self._ensure_planned_allocation_table()
         with self._conn() as conn:

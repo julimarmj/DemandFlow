@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtGui import QFont, QIcon
 
+from infrastructure.services.logging_service import setup_logging
 from infrastructure.repositories.sqlite_repository import SQLiteDemandRepository
 from infrastructure.services.file_service import DemandFileService
 from core.usecases.demand_usecases import DemandUseCases
@@ -21,6 +22,7 @@ from presentation.styles.stylesheet import get_stylesheet
 from infrastructure.services.ai_service import create_ai_service
 
 def main():
+    setup_logging()
     app = QApplication(sys.argv)
     app.setOrganizationName("DemandFlow")
     app.setApplicationName("App")
