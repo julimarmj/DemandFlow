@@ -9,11 +9,17 @@ reportlab>=4.0.0      # Geração de PDF
 openpyxl>=3.1.0       # Exportação Excel
 
 # Criação de arquivo Word/PowerPoint em branco na aba de Arquivos (menu
-# "Novo") — pré-visualização de .docx/.pptx foi tentada e descartada (não
-# ficou boa o suficiente); PDF/imagem/texto/DWG usam QtPdf/dwg2SVG, sem
-# depender dessas duas
+# "Novo") — a pré-visualização de Office usa o próprio Office via COM
+# (pywin32 abaixo), não estas duas
 python-docx>=1.2.0
 python-pptx>=1.0.2
+
+# Pré-visualização de Word/Excel/PowerPoint (.doc/.docx/.xls/.xlsx/.ppt/
+# .pptx) na aba de Arquivos: converte pro PDF de verdade usando o Office
+# instalado na máquina (COM automation, com cache — só reconverte se o
+# arquivo original mudar). Sem Office instalado, cai no aviso padrão de
+# "sem pré-visualização". Só existe binário Windows.
+pywin32>=306; sys_platform == "win32"
 
 # Correção ortográfica (NotePad / SpellCheckLineEdit) — binding C++ do Hunspell
 cyhunspell>=2.0.2

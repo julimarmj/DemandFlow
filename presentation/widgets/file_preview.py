@@ -14,13 +14,14 @@ from PyQt6.QtWidgets import (
     QWidget, QPlainTextEdit, QSizePolicy, QGraphicsView, QGraphicsScene,
 )
 from PyQt6.QtGui import QPixmap, QDesktopServices, QPainter, QColor
-from PyQt6.QtCore import Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal, QThread
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtSvgWidgets import QGraphicsSvgItem
 
 from infrastructure.services.file_service import DemandFileService
 from infrastructure.services.dwg_preview import extract_dwg_thumbnail
 from infrastructure.services.dwg_render import render_dwg_to_svg
+from infrastructure.services import office_render
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
 _PDF_EXTS   = {".pdf"}
@@ -28,7 +29,8 @@ _TEXT_EXTS  = {
     ".txt", ".md", ".csv", ".log", ".json", ".xml", ".ini", ".yaml", ".yml",
     ".py", ".js", ".css", ".html", ".htm", ".bat", ".ps1", ".sql",
 }
-_DWG_EXTS   = {".dwg"}
+_DWG_EXTS    = {".dwg"}
+_OFFICE_EXTS = {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}
 # Teto de leitura pra texto — evita travar a UI abrindo um log gigante inteiro.
 _TEXT_PREVIEW_MAX_BYTES = 300_000
 
@@ -41,6 +43,24 @@ try:
     _HAS_PDF = True
 except ImportError:
     _HAS_PDF = False
+
+
+class _OfficeConvertWorker(QThread):
+    """Roda a conversão Office -> PDF (COM automation, alguns segundos) fora
+    da thread da UI — sem isso o app inteiro travaria durante a conversão."""
+
+    finished_convert = pyqtSignal(str, object)  # caminho original, caminho do PDF (ou None)
+
+    def __init__(self, path: str):
+        super().__init__()  # sem parent: não acoplado ao ciclo de vida do widget
+        self._path = path
+
+    def run(self):
+        try:
+            result = office_render.convert_to_pdf(self._path)
+        except Exception:
+            result = None
+        self.finished_convert.emit(self._path, result)
 
 
 class _SvgPreviewWidget(QGraphicsView):
@@ -139,10 +159,10 @@ class _SvgPreviewWidget(QGraphicsView):
 class FilePreviewPanel(QFrame):
     """Pré-visualização de imagem/PDF/texto/DWG (renderização real via
     dwg2SVG quando possível, com a miniatura embutida no arquivo como
-    segunda opção); outros tipos (incluindo Word/Excel/PowerPoint —
-    tentamos preview de conteúdo, mas o resultado não ficou bom o
-    suficiente pra valer a pena) mostram um aviso com atalho pra abrir no
-    programa padrão do Windows.
+    segunda opção) e Word/Excel/PowerPoint (convertido pro PDF de verdade
+    via o Office instalado na máquina, com cache — ver office_render.py);
+    sem Office instalado ou qualquer outro tipo mostram um aviso com atalho
+    pra abrir no programa padrão do Windows.
 
     Emite expand_toggled(True/False) quando o botão de expandir (ao lado
     do de fechar) é clicado — quem incorpora este painel decide o que
@@ -156,6 +176,7 @@ class FilePreviewPanel(QFrame):
         self._dark = dark
         self._current_path = None
         self._expanded = False
+        self._office_worker: _OfficeConvertWorker | None = None
         self.setObjectName("card")
         self.setMinimumWidth(280)
         self._build()
@@ -241,6 +262,22 @@ class FilePreviewPanel(QFrame):
         self._text_view.setStyleSheet("font-family: Consolas, monospace; font-size: 12px;")
         self._text_page_idx = self._stack.addWidget(self._text_view)
 
+        # Convertendo Office -> PDF (pode levar alguns segundos — quase todo
+        # esse tempo é abrir o Office, não o tamanho do arquivo)
+        converting = QWidget()
+        cv_layout = QVBoxLayout(converting)
+        cv_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cv_layout.setSpacing(12)
+        cv_icon = QLabel()
+        cv_icon.setPixmap(qta.icon("fa6s.file-pdf", color="#94A3B8").pixmap(40, 40))
+        cv_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cv_layout.addWidget(cv_icon)
+        cv_msg = QLabel("Convertendo para PDF...")
+        cv_msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cv_msg.setStyleSheet("color: #94A3B8; font-size: 12px;")
+        cv_layout.addWidget(cv_msg)
+        self._converting_page_idx = self._stack.addWidget(converting)
+
         # Fallback (sem preview)
         fallback = QWidget()
         fb_layout = QVBoxLayout(fallback)
@@ -289,6 +326,8 @@ class FilePreviewPanel(QFrame):
                 self._load_text(p)
             elif ext in _DWG_EXTS:
                 self._load_dwg(p)
+            elif ext in _OFFICE_EXTS and _HAS_PDF:
+                self._load_office(p)
             else:
                 self._stack.setCurrentIndex(self._fallback_page_idx)
         except Exception as e:
@@ -332,6 +371,36 @@ class FilePreviewPanel(QFrame):
         )
         self._img_caption_lbl.setVisible(True)
         self._stack.setCurrentIndex(self._img_page_idx)
+
+    def _load_office(self, p: Path):
+        # Já convertido antes e ainda válido (arquivo original não mudou)?
+        # Mostra na hora, sem passar pela tela de "convertendo".
+        cached = office_render.get_cached_pdf(str(p))
+        if cached:
+            self._load_pdf(Path(cached))
+            return
+        self._stack.setCurrentIndex(self._converting_page_idx)
+        if self._office_worker is not None:
+            try:
+                self._office_worker.finished_convert.disconnect(self._on_office_converted)
+            except TypeError:
+                pass
+        worker = _OfficeConvertWorker(str(p))
+        worker.finished_convert.connect(self._on_office_converted)
+        self._office_worker = worker
+        worker.start()
+
+    def _on_office_converted(self, original_path: str, pdf_path):
+        if original_path != self._current_path:
+            return  # usuário já trocou de arquivo enquanto convertia — descarta
+        if not pdf_path:
+            self._stack.setCurrentIndex(self._fallback_page_idx)
+            return
+        try:
+            self._load_pdf(Path(pdf_path))
+        except Exception as e:
+            self._error_lbl.setText(f"Não foi possível abrir a pré-visualização:\n{e}")
+            self._stack.setCurrentIndex(self._error_page_idx)
 
     def _rescale_image(self):
         if not self._img_pixmap:
