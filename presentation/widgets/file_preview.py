@@ -12,8 +12,9 @@ import qtawesome as qta
 from PyQt6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QStackedWidget,
     QWidget, QPlainTextEdit, QSizePolicy, QGraphicsView, QGraphicsScene,
+    QGraphicsPixmapItem,
 )
-from PyQt6.QtGui import QPixmap, QDesktopServices, QPainter, QColor
+from PyQt6.QtGui import QPixmap, QDesktopServices, QPainter, QColor, QImageReader, QTransform
 from PyQt6.QtCore import Qt, QUrl, QSize, pyqtSignal, QThread
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtSvgWidgets import QGraphicsSvgItem
@@ -156,6 +157,109 @@ class _SvgPreviewWidget(QGraphicsView):
         event.accept()
 
 
+class _ImagePreviewWidget(QGraphicsView):
+    """Mesmo padrão de zoom/pan da _SvgPreviewWidget acima (roda do mouse
+    centrada no cursor, arrastar pra navegar, duplo clique enquadra de
+    novo), mas pra foto/imagem — e com giro em passos de 90°
+    (rotate_left/rotate_right), pra quando a orientação salva no arquivo
+    não bate com o que a câmera realmente gravou (comum em foto tirada na
+    vertical — o sensor grava sempre "deitado" e só marca a orientação
+    correta num metadado EXIF; câmera/app que não escreve esse metadado
+    direito faz a imagem aparecer virada). O giro aqui é só de
+    VISUALIZAÇÃO — não sobrescreve nem altera o arquivo original."""
+
+    _MAX_ZOOM_OVER_FIT = 25.0
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._gscene = QGraphicsScene(self)
+        self.setScene(self._gscene)
+        self._orig_pixmap: QPixmap | None = None
+        self._item: QGraphicsPixmapItem | None = None
+        self._rotation = 0  # múltiplo de 90 — só o quanto já foi girado nesta sessão
+        self._fit_scale = 1.0
+        self._zoomed = False
+        self.setRenderHints(QPainter.RenderHint.Antialiasing
+                             | QPainter.RenderHint.SmoothPixmapTransform)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        self.setToolTip("Roda do mouse: zoom · arrastar: navegar · duplo clique: enquadrar de novo")
+
+    def load(self, pixmap: QPixmap):
+        self._orig_pixmap = pixmap
+        self._rotation = 0
+        self._refresh_item()
+
+    def rotate_left(self):
+        if self._orig_pixmap is None:
+            return
+        self._rotation = (self._rotation - 90) % 360
+        self._refresh_item()
+
+    def rotate_right(self):
+        if self._orig_pixmap is None:
+            return
+        self._rotation = (self._rotation + 90) % 360
+        self._refresh_item()
+
+    def _refresh_item(self):
+        # Gira o PIXMAP em si (não um transform no item) — assim o
+        # boundingRect já sai correto (largura/altura trocadas num giro de
+        # 90°/270°) e todo o resto (fitInView, zoom, scene rect) funciona
+        # sem precisar compor rotação + escala manualmente.
+        self._gscene.clear()
+        self._item = None
+        if self._orig_pixmap is None or self._orig_pixmap.isNull():
+            return
+        pix = self._orig_pixmap
+        if self._rotation:
+            pix = pix.transformed(QTransform().rotate(self._rotation), Qt.TransformationMode.SmoothTransformation)
+        item = QGraphicsPixmapItem(pix)
+        self._gscene.addItem(item)
+        self._gscene.setSceneRect(item.boundingRect())
+        self._item = item
+        self._fit()
+
+    def _fit(self):
+        if self._item is not None:
+            self.fitInView(self._item, Qt.AspectRatioMode.KeepAspectRatio)
+            self._fit_scale = self.transform().m11()
+        self._zoomed = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not self._zoomed:
+            self._fit()
+
+    def wheelEvent(self, event):
+        if self._item is None:
+            super().wheelEvent(event)
+            return
+        delta = event.angleDelta().y()
+        if delta == 0:
+            return
+        factor = 1.0015 ** delta
+        current = self.transform().m11()
+        target = current * factor
+        min_scale = self._fit_scale
+        max_scale = self._fit_scale * self._MAX_ZOOM_OVER_FIT
+        if target < min_scale:
+            factor = min_scale / current
+        elif target > max_scale:
+            factor = max_scale / current
+        if factor != 1.0:
+            self.scale(factor, factor)
+            self._zoomed = abs(self.transform().m11() - self._fit_scale) > self._fit_scale * 0.01
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event):
+        self._fit()
+        event.accept()
+
+
 class FilePreviewPanel(QFrame):
     """Pré-visualização de imagem/PDF/texto/DWG (renderização real via
     dwg2SVG quando possível, com a miniatura embutida no arquivo como
@@ -207,6 +311,25 @@ class FilePreviewPanel(QFrame):
         self._title_lbl.setWordWrap(True)
         hdr.addWidget(self._title_lbl, 1)
 
+        # Só aparecem na página de imagem (_on_stack_page_changed cuida disso)
+        self._rotate_left_btn = QPushButton()
+        self._rotate_left_btn.setFixedSize(24, 24)
+        self._rotate_left_btn.setStyleSheet("border: none; background: transparent;")
+        self._rotate_left_btn.setAutoDefault(False)
+        self._rotate_left_btn.setToolTip("Girar 90° à esquerda")
+        self._rotate_left_btn.clicked.connect(lambda: self._img_view.rotate_left())
+        self._rotate_left_btn.setVisible(False)
+        hdr.addWidget(self._rotate_left_btn)
+
+        self._rotate_right_btn = QPushButton()
+        self._rotate_right_btn.setFixedSize(24, 24)
+        self._rotate_right_btn.setStyleSheet("border: none; background: transparent;")
+        self._rotate_right_btn.setAutoDefault(False)
+        self._rotate_right_btn.setToolTip("Girar 90° à direita")
+        self._rotate_right_btn.clicked.connect(lambda: self._img_view.rotate_right())
+        self._rotate_right_btn.setVisible(False)
+        hdr.addWidget(self._rotate_right_btn)
+
         self._expand_btn = QPushButton()
         self._expand_btn.setFixedSize(24, 24)
         self._expand_btn.setStyleSheet("border: none; background: transparent;")
@@ -232,16 +355,14 @@ class FilePreviewPanel(QFrame):
         self._stack = QStackedWidget()
         root.addWidget(self._stack, 1)
 
-        # Imagem (também usada pra miniatura embutida de DWG, com legenda)
+        # Imagem (também usada pra miniatura embutida de DWG, com legenda) —
+        # zoom/pan/giro de verdade, mesmo padrão da _SvgPreviewWidget do DWG.
         img_page = QWidget()
         img_page_layout = QVBoxLayout(img_page)
         img_page_layout.setContentsMargins(0, 0, 0, 0)
         img_page_layout.setSpacing(4)
-        self._img_lbl = QLabel()
-        self._img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._img_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._img_pixmap = None
-        img_page_layout.addWidget(self._img_lbl, 1)
+        self._img_view = _ImagePreviewWidget()
+        img_page_layout.addWidget(self._img_view, 1)
         self._img_caption_lbl = QLabel("")
         self._img_caption_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._img_caption_lbl.setWordWrap(True)
@@ -333,6 +454,9 @@ class FilePreviewPanel(QFrame):
             self._converting_spin.start()
         else:
             self._converting_spin.stop()
+        is_image = index == self._img_page_idx
+        self._rotate_left_btn.setVisible(is_image)
+        self._rotate_right_btn.setVisible(is_image)
 
     # ── Carregamento ─────────────────────────────────────────────────────────
 
@@ -361,14 +485,27 @@ class FilePreviewPanel(QFrame):
         except Exception as e:
             self._error_lbl.setText(f"Não foi possível abrir a pré-visualização:\n{e}")
             self._stack.setCurrentIndex(self._error_page_idx)
+        # setCurrentIndex só emite currentChanged se o índice REALMENTE mudou
+        # — se a página de imagem já era a que estava aparecendo (comum: é a
+        # primeira página, painel recém-criado), os botões de girar ficariam
+        # escondidos pra sempre. Chamando direto aqui cobre esse caso; a
+        # conexão ao sinal (lá em _build) continua cuidando das trocas que
+        # acontecem depois, de forma assíncrona (ex.: _on_office_converted).
+        self._on_stack_page_changed(self._stack.currentIndex())
 
     def _load_image(self, p: Path):
-        pix = QPixmap(str(p))
-        if pix.isNull():
+        # QPixmap(caminho) direto IGNORA a orientação salva no EXIF da foto
+        # (câmera/celular grava o sensor sempre "deitado" e só marca a
+        # orientação certa nesse metadado) — é exatamente isso que fazia foto
+        # tirada na vertical aparecer virada de vez em quando. QImageReader
+        # com autoTransform aplica essa orientação na hora de ler.
+        reader = QImageReader(str(p))
+        reader.setAutoTransform(True)
+        image = reader.read()
+        if image.isNull():
             raise ValueError("formato de imagem não suportado")
         self._img_caption_lbl.setVisible(False)
-        self._img_pixmap = pix
-        self._rescale_image()
+        self._img_view.load(QPixmap.fromImage(image))
         self._stack.setCurrentIndex(self._img_page_idx)
 
     def _load_dwg(self, p: Path):
@@ -392,8 +529,7 @@ class FilePreviewPanel(QFrame):
         if not pix.loadFromData(image_bytes, fmt.upper()) or pix.isNull():
             self._stack.setCurrentIndex(self._fallback_page_idx)
             return
-        self._img_pixmap = pix
-        self._rescale_image()
+        self._img_view.load(pix)
         self._img_caption_lbl.setText(
             "Não foi possível renderizar o desenho — miniatura salva no arquivo."
         )
@@ -438,22 +574,6 @@ class FilePreviewPanel(QFrame):
         except Exception as e:
             self._error_lbl.setText(f"Não foi possível abrir a pré-visualização:\n{e}")
             self._stack.setCurrentIndex(self._error_page_idx)
-
-    def _rescale_image(self):
-        if not self._img_pixmap:
-            return
-        target = self._img_lbl.size()
-        if target.width() > 10 and target.height() > 10:
-            scaled = self._img_pixmap.scaled(
-                target, Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self._img_lbl.setPixmap(scaled)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if self._stack.currentIndex() == self._img_page_idx:
-            self._rescale_image()
 
     def _load_pdf(self, p: Path):
         # load() retorna um QPdfDocument.Error (não um Status) — None_
@@ -521,5 +641,7 @@ class FilePreviewPanel(QFrame):
     def _apply_theme_colors(self):
         ic = "#94A3B8" if self._dark else "#64748B"
         self._close_btn.setIcon(qta.icon("fa6s.xmark", color=ic))
+        self._rotate_left_btn.setIcon(qta.icon("fa6s.rotate-left", color=ic))
+        self._rotate_right_btn.setIcon(qta.icon("fa6s.rotate-right", color=ic))
         self._update_expand_icon()
         self._sep.setStyleSheet(f"color: {'#334155' if self._dark else '#E2E8F0'};")
