@@ -375,9 +375,10 @@ class FilePreviewPanel(QFrame):
         self._svg_widget = _SvgPreviewWidget()
         self._svg_page_idx = self._stack.addWidget(self._svg_widget)
 
-        # PDF
+        # PDF — QPdfDocument SEM parent (ver _release_pdf, mais abaixo, pra
+        # entender por quê: é o que permite soltar o arquivo de vez).
         if _HAS_PDF:
-            self._pdf_doc = QPdfDocument(self)
+            self._pdf_doc = QPdfDocument(None)
             self._pdf_view = QPdfView(self)
             self._pdf_view.setDocument(self._pdf_doc)
             self._pdf_view.setPageMode(QPdfView.PageMode.MultiPage)
@@ -461,6 +462,14 @@ class FilePreviewPanel(QFrame):
     # ── Carregamento ─────────────────────────────────────────────────────────
 
     def load_file(self, path: str):
+        # Solta o PDF anterior (se algum) ANTES de decidir o que carregar
+        # agora — troca de PDF pra outro PDF já se resolve sozinha (o load()
+        # seguinte substitui), mas trocar pra um tipo que não é PDF nunca
+        # tocava no _pdf_doc antigo, então o último PDF aberto ficava
+        # travado (Windows recusava excluir/mover) até o painel inteiro ser
+        # destruído. Chamar sempre aqui, incondicional, garante que nenhum
+        # caminho novo no futuro esqueça de liberar.
+        self._release_pdf()
         self._current_path = path
         p = Path(path)
         self._title_lbl.setText(p.name)
@@ -584,6 +593,25 @@ class FilePreviewPanel(QFrame):
             raise ValueError(f"não foi possível abrir o PDF ({error.name})")
         self._stack.setCurrentIndex(self._pdf_page_idx)
 
+    def _release_pdf(self):
+        """Solta o arquivo PDF atualmente carregado, se algum. TESTADO na
+        prática: chamar só QPdfDocument.close() NÃO libera o arquivo no
+        Windows — o status muda pra "fechado" mas o processo continua
+        segurando o arquivo aberto (recusa excluir/mover/renomear) até o
+        objeto ser destruído de verdade, não só fechado. Por isso troca por
+        um QPdfDocument novo em vez de reaproveitar o mesmo — sem parent
+        (ver _build), então soltar a última referência Python já destrói o
+        objeto C++ na hora, liberando o arquivo. Sem essa troca, o ÚLTIMO
+        PDF aberto no preview ficava travado até fechar o painel/diálogo
+        inteiro — foi exatamente o bug relatado (usuário não conseguia
+        excluir um PDF que tinha acabado de pré-visualizar)."""
+        if not _HAS_PDF or self._pdf_doc is None:
+            return
+        self._pdf_view.setDocument(None)
+        self._pdf_doc.close()
+        self._pdf_doc = QPdfDocument(None)
+        self._pdf_view.setDocument(self._pdf_doc)
+
     def _load_text(self, p: Path):
         raw = p.read_bytes()[:_TEXT_PREVIEW_MAX_BYTES]
         for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
@@ -615,6 +643,7 @@ class FilePreviewPanel(QFrame):
 
     def _on_close(self):
         self.setVisible(False)
+        self._release_pdf()
         if self._expanded:
             # fechar já implica sair do modo expandido — sem isso quem
             # incorporou o painel (ex.: o diálogo de detalhes) ficaria com o
