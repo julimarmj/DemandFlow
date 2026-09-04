@@ -391,7 +391,10 @@ class DemandFileService:
                 last_err = e
                 if attempt < 3:
                     time.sleep(0.3 * (attempt + 1))
-        logger.warning("'%s' continuou bloqueado após 4 tentativas ao tentar %s", name, verb, exc_info=True)
+        # exc_info=last_err (não True) — aqui já estamos fora do bloco
+        # except, sys.exc_info() não tem mais nada ativo pra anexar
+        # (exc_info=True nesse ponto só produzia "NoneType: None" no log).
+        logger.warning("'%s' continuou bloqueado após 4 tentativas ao tentar %s", name, verb, exc_info=last_err)
         raise PermissionError(
             f'Não foi possível {verb} "{name}" — o arquivo pode estar aberto em '
             f"outro programa (leitor de PDF, Word, etc.) ou sendo usado por "
